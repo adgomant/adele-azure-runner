@@ -1,0 +1,48 @@
+[project]
+name = "adele-azure-runner"
+version = "0.1.0"
+description = "ADeLe benchmark runner and multi-judge framework for Azure AI Foundry"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "azure-ai-inference>=1.0.0b9",
+  "azure-identity>=1.17.1",
+  "datasets>=2.20.0",
+  "pyarrow>=17.0.0",
+  "pydantic>=2.8.2",
+  "pydantic-settings>=2.4.0",
+  "pyyaml>=6.0.2",
+  "tenacity>=8.5.0",
+  "typer>=0.12.4",
+  "rich>=13.7.1",
+  "orjson>=3.10.7",
+  "scikit-learn>=1.5.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.2",
+  "pytest-mock>=3.14.0",
+  "ruff>=0.6.2",
+  "mypy>=1.11.1",
+]
+
+[project.scripts]
+adele-runner = "adele_runner.cli:app"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
