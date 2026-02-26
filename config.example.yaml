@@ -1,0 +1,51 @@
+run:
+  run_id: "adele_dev_run"
+  output_dir: "runs"
+
+dataset:
+  name: "adele"
+  hf_id: "CFI-Kinds-of-Intelligence/ADeLe_battery_v1dot0"
+  split: "train"
+  limit: 50           # set null for full
+  seed: 42
+
+inference:
+  mode: "auto"        # "auto" | "foundry_async" | "azure_openai_batch"
+  foundry:
+    endpoint: "https://<YOUR-RESOURCE>.services.ai.azure.com/models"
+    api_key_env: "AZURE_AI_API_KEY"
+    model: "<FOUNDRY_MODEL_ID_OR_DEPLOYMENT>"
+    temperature: 0.0
+    max_tokens: 2048
+    top_p: 1.0
+  batch:
+    enabled: false
+    azure_openai_endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
+    api_key_env: "AZURE_OPENAI_API_KEY"
+    deployment: "<AZURE_OPENAI_DEPLOYMENT_NAME>"
+    api_version: "<API_VERSION>"
+    completion_endpoint: "/chat/completions"
+    completion_window: "24h"
+
+concurrency:
+  max_in_flight: 16
+  request_timeout_s: 120
+  max_retries: 6
+  backoff_base_s: 1.0
+  backoff_max_s: 30.0
+
+judging:
+  enabled: true
+  prompt_template: "v1"
+  require_json: true
+  score_threshold: 4
+  judges:
+    - name: "gpt4o"
+      provider: "foundry"
+      model: "<FOUNDRY_GPT4O_MODEL_ID>"
+    - name: "claude"
+      provider: "foundry"
+      model: "<FOUNDRY_CLAUDE_MODEL_ID>"
+
+logging:
+  level: "INFO"
