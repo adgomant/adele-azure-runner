@@ -4,11 +4,30 @@ ADeLe Runner loads configuration from a YAML file and optionally overrides value
 
 ## Loading Order
 
-1. **YAML file** -- `config.yaml` by default, or the path given via `--config / -c`
-2. **CLI overrides** -- flags like `--model`, `--mode`, `--judge`, `--judge-template` mutate the loaded config in-place
-3. **Environment variables** -- API keys are read from env vars named in the config (never stored in the YAML)
+1. **`.env` files** -- environment variables are loaded from `.env.local` and `.env` at CLI startup (before any config is read). `.env.local` values take priority over `.env`. Shell-exported variables are never overwritten
+2. **YAML file** -- `config.yaml` by default, or the path given via `--config / -c`
+3. **CLI overrides** -- flags like `--model`, `--mode`, `--judge`, `--judge-template` mutate the loaded config in-place
+4. **Environment variables** -- API keys are read from env vars named in the config (never stored in the YAML)
 
 If no `--config` is provided and `config.yaml` does not exist in the working directory, the CLI exits with an error.
+
+### `.env` files
+
+The CLI automatically loads environment variables from `.env.local` and `.env` in the working directory:
+
+| File | Purpose | Git-tracked? |
+|---|---|---|
+| `.env` | Shared defaults (non-secret values) | No (gitignored) |
+| `.env.local` | Personal overrides (API keys, secrets) | No (gitignored) |
+
+Example `.env.local`:
+
+```dotenv
+AZURE_AI_API_KEY=abc123...
+AZURE_OPENAI_API_KEY=xyz789...
+```
+
+Precedence: **shell env** > `.env.local` > `.env`. Both files use `override=False`, so whichever value is set first wins.
 
 ## Config Sections
 
@@ -113,6 +132,8 @@ Each model pricing entry (keyed by model name):
 | `AZURE_OPENAI_API_KEY` | `inference.batch.api_key_env` | Batch inference and Batch judges |
 
 The variable names are configurable. The runner reads the env var whose name is specified in the config, not a hardcoded name.
+
+> **Tip:** Instead of exporting variables in your shell, place them in a `.env.local` file in the project root. See [Loading Order](#loading-order) above.
 
 ## Mode Resolution
 

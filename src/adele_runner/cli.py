@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
 
@@ -27,6 +28,11 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+# Load .env files. Order matters: .env.local first so its values take
+# precedence over .env. override=False means shell env vars always win.
+load_dotenv(dotenv_path=".env.local", override=False)
+load_dotenv(dotenv_path=".env", override=False)
 
 
 def _setup_logging(level: str) -> None:

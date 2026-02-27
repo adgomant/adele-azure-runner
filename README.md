@@ -39,6 +39,9 @@ cp config.example.yaml config.yaml
 # Set API keys (never hardcode)
 export AZURE_AI_API_KEY="<your-foundry-api-key>"
 export AZURE_OPENAI_API_KEY="<your-azure-openai-key>"   # only if using batch mode
+
+# Or use a .env.local file instead (auto-loaded by the CLI)
+# echo 'AZURE_AI_API_KEY=<your-foundry-api-key>' >> .env.local
 ```
 
 ## Example End-to-End Run
