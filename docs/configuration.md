@@ -116,6 +116,7 @@ Each judge entry:
 | `name` | `str` | *(required)* | Display name for this judge |
 | `provider` | `"foundry" \| "batch"` | `"foundry"` | Whether to use Foundry async or Azure OpenAI Batch API |
 | `model` | `str` | *(required)* | Model name or deployment to use for judging |
+| `max_tokens` | `int` | `512` | Maximum completion tokens for this judge |
 | `rate_limits` | `object \| null` | `null` | Optional per-judge rate limits (foundry judges only). Same structure as `inference.rate_limits` |
 
 ### `logging`
@@ -205,7 +206,7 @@ When `inference.rate_limits` is set and `inference.mode` resolves to `foundry`:
 
 ### Judge auto-tuning
 
-When foundry judges have `rate_limits` configured, the runner uses the **most restrictive** judge's rate limits to tune concurrency before the judging phase. Judge requests use a fixed `max_tokens=512`.
+When foundry judges have `rate_limits` configured, the runner uses the **most restrictive** judge's rate limits to tune concurrency before the judging phase. The **largest** `max_tokens` among configured foundry judges is used for auto-tuning (worst-case token consumption). The default is `512` if no custom value is set.
 
 Since inference and judging run sequentially, concurrency parameters are recomputed between phases.
 
@@ -250,9 +251,10 @@ All CLI flags override the corresponding config-file values.
 ### `--judge` format
 
 ```
-MODEL                       → foundry provider, no rate limits
-MODEL:PROVIDER              → explicit provider (foundry or batch)
-MODEL:PROVIDER:TPM:RPM      → explicit provider + rate limits (foundry only)
+MODEL                              → foundry provider, no rate limits
+MODEL:PROVIDER                     → explicit provider (foundry or batch)
+MODEL:PROVIDER:TPM:RPM             → explicit provider + rate limits (foundry only)
+MODEL:PROVIDER:TPM:RPM:MAX_TOKENS  → provider + rate limits + max tokens (foundry only)
 ```
 
 Examples:
@@ -260,6 +262,7 @@ Examples:
 --judge gpt-4o                          # foundry, no rate limits
 --judge gpt-4o:batch                    # batch provider
 --judge gpt-4o:foundry:80000:300        # foundry with TPM=80000 RPM=300
+--judge gpt-4o:foundry:80000:300:1024   # foundry with rate limits + max_tokens=1024
 ```
 
 Rate limits for batch judges are not supported (batch uses file splitting instead). Providing TPM/RPM for a batch judge is an error.

@@ -232,10 +232,10 @@ def test_judge_three_parts_raises():
         apply_cli_overrides(cfg, judges=["gpt-4o:foundry:80000"])
 
 
-def test_judge_five_parts_raises():
+def test_judge_six_parts_raises():
     cfg = _base_config()
     with pytest.raises(typer.BadParameter, match="Invalid judge format"):
-        apply_cli_overrides(cfg, judges=["a:b:c:d:e"])
+        apply_cli_overrides(cfg, judges=["a:b:c:d:e:f"])
 
 
 def test_multiple_judges_with_mixed_rate_limits():
@@ -244,6 +244,56 @@ def test_multiple_judges_with_mixed_rate_limits():
     assert cfg.judging.judges[0].rate_limits is not None
     assert cfg.judging.judges[0].rate_limits.tokens_per_minute == 80_000
     assert cfg.judging.judges[1].rate_limits is None
+
+
+# ---------------------------------------------------------------------------
+# --judge with max_tokens (MODEL:PROVIDER:TPM:RPM:MAX_TOKENS)
+# ---------------------------------------------------------------------------
+
+
+def test_judge_default_max_tokens():
+    cfg = _base_config()
+    apply_cli_overrides(cfg, judges=["gpt-4o"])
+    assert cfg.judging.judges[0].max_tokens == 512
+
+
+def test_judge_four_parts_default_max_tokens():
+    cfg = _base_config()
+    apply_cli_overrides(cfg, judges=["gpt-4o:foundry:80000:300"])
+    assert cfg.judging.judges[0].max_tokens == 512
+
+
+def test_judge_five_parts_with_max_tokens():
+    cfg = _base_config()
+    apply_cli_overrides(cfg, judges=["gpt-4o:foundry:80000:300:1024"])
+    j = cfg.judging.judges[0]
+    assert j.name == "gpt-4o"
+    assert j.provider == "foundry"
+    assert j.rate_limits is not None
+    assert j.rate_limits.tokens_per_minute == 80_000
+    assert j.rate_limits.requests_per_minute == 300
+    assert j.max_tokens == 1024
+
+
+def test_judge_five_parts_batch_with_rate_limits_raises():
+    cfg = _base_config()
+    with pytest.raises(typer.BadParameter, match="not supported for batch"):
+        apply_cli_overrides(cfg, judges=["gpt-4o:batch:80000:300:1024"])
+
+
+def test_judge_five_parts_non_numeric_max_tokens_raises():
+    cfg = _base_config()
+    with pytest.raises(typer.BadParameter, match="MAX_TOKENS must be an integer"):
+        apply_cli_overrides(cfg, judges=["gpt-4o:foundry:80000:300:abc"])
+
+
+def test_multiple_judges_with_different_max_tokens():
+    cfg = _base_config()
+    apply_cli_overrides(
+        cfg, judges=["gpt-4o:foundry:80000:300:1024", "claude:foundry:50000:200:2048"]
+    )
+    assert cfg.judging.judges[0].max_tokens == 1024
+    assert cfg.judging.judges[1].max_tokens == 2048
 
 
 # ---------------------------------------------------------------------------

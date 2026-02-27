@@ -82,7 +82,7 @@ def summarize(config: AppConfig) -> dict[str, Any]:
     verification: dict[str, Any] = {
         "n_instances": len(avg_scores),
         "mean_avg_score": round(sum(avg_scores.values()) / len(avg_scores), 3) if avg_scores else 0,
-        "verification_pass_rate": round(sum(verification_binary) / len(verification_binary), 3)
+        "verification_success_rate": round(sum(verification_binary) / len(verification_binary), 3)
         if verification_binary
         else 0,
         "verification_score_dist": dict(sorted(Counter(verification_binary).items())),
@@ -158,10 +158,10 @@ def summarize(config: AppConfig) -> dict[str, Any]:
         print(f"  N={stats['n']}  mean_score={stats['mean_score']}")
         print(f"  Score distribution: {stats['score_dist']}")
 
-    print("\n--- Verification (avg score >= 3 → pass) ---")
+    print("\n--- Verification (avg score >= 3 → sucess) ---")
     print(f"  Instances evaluated: {verification['n_instances']}")
     print(f"  Mean avg score: {verification['mean_avg_score']}")
-    print(f"  Verification pass rate: {verification['verification_pass_rate']}")
+    print(f"  Verification sucess rate: {verification['verification_success_rate']}")
     print(f"  Distribution: {verification['verification_score_dist']}")
 
     if inter_rater:
@@ -183,6 +183,7 @@ def summarize(config: AppConfig) -> dict[str, Any]:
         for model_id, cost in estimated_cost.items():
             print(f"  {model_id}: ${cost:.6f}")
         total_cost = sum(estimated_cost.values())
+        estimated_cost["total"] = round(total_cost, 6)
         print(f"  TOTAL: ${total_cost:.6f}")
 
     # ----- Export to JSON -----

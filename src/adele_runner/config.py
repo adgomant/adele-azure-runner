@@ -80,6 +80,7 @@ class JudgeConfig(BaseModel):
     provider: Literal["foundry", "batch"] = "foundry"
     model: str
     rate_limits: RateLimitsConfig | None = None
+    max_tokens: int = 512
 
 
 class JudgingConfig(BaseModel):
@@ -236,6 +237,11 @@ class AppConfig(BaseModel):
         if not limits:
             return None
         return min(limits, key=lambda rl: rl.tokens_per_minute)
+
+    def get_max_judge_max_tokens(self) -> int:
+        """Return the largest ``max_tokens`` among foundry judges (for auto-tuning)."""
+        values = [j.max_tokens for j in self.judging.judges if j.provider == "foundry"]
+        return max(values) if values else 512
 
     def validate_config(self, *, dry_run: bool = False) -> list[str]:
         """Validate config for common mistakes. Returns list of error messages."""

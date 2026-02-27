@@ -143,7 +143,7 @@ def test_apply_overrides_with_explicit_max_tokens():
 
 
 def test_apply_overrides_for_judge_rate_limits():
-    """Judge rate limits should tune concurrency with fixed max_tokens=512."""
+    """Judge rate limits should tune concurrency using the largest judge max_tokens."""
     cfg = _cfg(
         judging={
             "judges": [
@@ -157,6 +157,62 @@ def test_apply_overrides_for_judge_rate_limits():
         },
     )
     judge_rl = cfg.get_most_restrictive_judge_rate_limits()
-    cfg.apply_rate_limit_overrides(judge_rl, max_tokens=512)
+    cfg.apply_rate_limit_overrides(judge_rl, max_tokens=cfg.get_max_judge_max_tokens())
     assert cfg.concurrency.max_in_flight >= 1
     assert cfg.concurrency.request_timeout_s >= 30.0
+
+
+# ---------------------------------------------------------------------------
+# get_max_judge_max_tokens
+# ---------------------------------------------------------------------------
+
+
+def test_get_max_judge_max_tokens_default():
+    cfg = _cfg(
+        judging={
+            "judges": [
+                {"name": "j1", "provider": "foundry", "model": "m1"},
+            ]
+        },
+    )
+    assert cfg.get_max_judge_max_tokens() == 512
+
+
+def test_get_max_judge_max_tokens_uses_largest():
+    cfg = _cfg(
+        judging={
+            "judges": [
+                {"name": "j1", "provider": "foundry", "model": "m1", "max_tokens": 256},
+                {"name": "j2", "provider": "foundry", "model": "m2", "max_tokens": 1024},
+            ]
+        },
+    )
+    assert cfg.get_max_judge_max_tokens() == 1024
+
+
+def test_get_max_judge_max_tokens_ignores_batch():
+    cfg = _cfg(
+        judging={
+            "judges": [
+                {"name": "j1", "provider": "foundry", "model": "m1", "max_tokens": 256},
+                {"name": "j2", "provider": "batch", "model": "m2", "max_tokens": 2048},
+            ]
+        },
+    )
+    assert cfg.get_max_judge_max_tokens() == 256
+
+
+def test_get_max_judge_max_tokens_no_foundry_judges():
+    cfg = _cfg(
+        judging={
+            "judges": [
+                {"name": "j1", "provider": "batch", "model": "m1"},
+            ]
+        },
+    )
+    assert cfg.get_max_judge_max_tokens() == 512
+
+
+def test_get_max_judge_max_tokens_no_judges():
+    cfg = _cfg()
+    assert cfg.get_max_judge_max_tokens() == 512

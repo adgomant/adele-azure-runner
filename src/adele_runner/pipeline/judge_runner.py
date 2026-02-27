@@ -273,7 +273,7 @@ class JudgeAdapter:
                     messages=[UserMessage(content=judge_prompt)],
                     model=self._judge_cfg.model,
                     temperature=0.0,
-                    max_tokens=512,
+                    max_tokens=self._judge_cfg.max_tokens,
                     raw_response_hook=self._on_response,
                 ),
                 timeout=timeout_s,
@@ -365,7 +365,7 @@ class JudgeBatchAdapter:
                     "model": self._judge_cfg.model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.0,
-                    "max_tokens": 512,
+                    "max_tokens": self._judge_cfg.max_tokens,
                 },
             }
             jsonl_lines.append(json.dumps(row))

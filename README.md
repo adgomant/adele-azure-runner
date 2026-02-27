@@ -30,7 +30,7 @@ cd adele-azure-runner
 # Create virtual environment and install dependencies
 uv venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-uv sync                     # add --extra batch for Azure OpenAI Batch API support
+uv sync                     # add `--extra batch` for Azure OpenAI Batch API support
 
 # Copy and edit config
 cp config.example.yaml config.yaml

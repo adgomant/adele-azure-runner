@@ -56,13 +56,15 @@ def _parse_judge_flag(value: str) -> JudgeConfig:
 
     Accepted formats::
 
-        MODEL                   → foundry, no rate limits
-        MODEL:PROVIDER          → explicit provider, no rate limits
-        MODEL:PROVIDER:TPM:RPM  → explicit provider + rate limits
+        MODEL                          → foundry, no rate limits
+        MODEL:PROVIDER                 → explicit provider, no rate limits
+        MODEL:PROVIDER:TPM:RPM         → explicit provider + rate limits
+        MODEL:PROVIDER:TPM:RPM:MAXTOK  → explicit provider + rate limits + max_tokens
 
     Batch judges cannot have rate limits (raises :class:`~typer.BadParameter`).
     """
     parts = value.split(":")
+    max_tokens = 512  # default
 
     if len(parts) == 1:
         model, provider = parts[0], "foundry"
@@ -70,8 +72,8 @@ def _parse_judge_flag(value: str) -> JudgeConfig:
     elif len(parts) == 2:
         model, provider = parts
         rate_limits = None
-    elif len(parts) == 4:
-        model, provider, tpm_str, rpm_str = parts
+    elif len(parts) in (4, 5):
+        model, provider, tpm_str, rpm_str = parts[:4]
         try:
             tpm = int(tpm_str)
             rpm = int(rpm_str)
@@ -80,9 +82,18 @@ def _parse_judge_flag(value: str) -> JudgeConfig:
                 f"Invalid rate limits in '{value}'. TPM and RPM must be integers."
             ) from None
         rate_limits = RateLimitsConfig(tokens_per_minute=tpm, requests_per_minute=rpm)
+        if len(parts) == 5:
+            try:
+                max_tokens = int(parts[4])
+            except ValueError:
+                raise typer.BadParameter(
+                    f"Invalid max_tokens in '{value}'. MAX_TOKENS must be an integer."
+                ) from None
     else:
         raise typer.BadParameter(
-            f"Invalid judge format '{value}'. Use MODEL, MODEL:PROVIDER, or MODEL:PROVIDER:TPM:RPM."
+            f"Invalid judge format '{value}'. "
+            "Use MODEL, MODEL:PROVIDER, MODEL:PROVIDER:TPM:RPM, "
+            "or MODEL:PROVIDER:TPM:RPM:MAX_TOKENS."
         )
 
     if provider not in _VALID_JUDGE_PROVIDERS:
@@ -96,7 +107,9 @@ def _parse_judge_flag(value: str) -> JudgeConfig:
             "Batch judges use file splitting, not rate limiting."
         )
 
-    return JudgeConfig(name=model, provider=provider, model=model, rate_limits=rate_limits)  # type: ignore[arg-type]
+    return JudgeConfig(
+        name=model, provider=provider, model=model, rate_limits=rate_limits, max_tokens=max_tokens
+    )  # type: ignore[arg-type]
 
 
 def apply_cli_overrides(
@@ -300,7 +313,7 @@ def run_judge(
         None,
         "--judge",
         "-j",
-        help="Judge model. Format: MODEL, MODEL:PROVIDER, or MODEL:PROVIDER:TPM:RPM. Repeatable.",
+        help="Judge model. Format: MODEL, MODEL:PROVIDER, MODEL:PROVIDER:TPM:RPM, or MODEL:PROVIDER:TPM:RPM:MAX_TOKENS. Repeatable.",
     ),
     judge_template: str | None = typer.Option(
         None, "--judge-template", help="Judge prompt template: v1 or v2."
@@ -316,7 +329,7 @@ def run_judge(
     apply_cli_overrides(cfg, judges=judge, judge_template=judge_template)
     judge_rl = cfg.get_most_restrictive_judge_rate_limits()
     if judge_rl is not None:
-        cfg.apply_rate_limit_overrides(judge_rl, max_tokens=512)
+        cfg.apply_rate_limit_overrides(judge_rl, max_tokens=cfg.get_max_judge_max_tokens())
 
     outputs_path = cfg.outputs_path()
     if not outputs_path.exists():
@@ -379,7 +392,7 @@ def run_all(
         None,
         "--judge",
         "-j",
-        help="Judge model. Format: MODEL, MODEL:PROVIDER, or MODEL:PROVIDER:TPM:RPM. Repeatable.",
+        help="Judge model. Format: MODEL, MODEL:PROVIDER, MODEL:PROVIDER:TPM:RPM, or MODEL:PROVIDER:TPM:RPM:MAX_TOKENS. Repeatable.",
     ),
     judge_template: str | None = typer.Option(
         None, "--judge-template", help="Judge prompt template: v1 or v2."
@@ -424,7 +437,7 @@ def run_all(
     if cfg.judging.enabled:
         judge_rl = cfg.get_most_restrictive_judge_rate_limits()
         if judge_rl is not None:
-            cfg.apply_rate_limit_overrides(judge_rl, max_tokens=512)
+            cfg.apply_rate_limit_overrides(judge_rl, max_tokens=cfg.get_max_judge_max_tokens())
         inference_outputs = read_jsonl(cfg.outputs_path(), InferenceOutput)
         ground_truths = _load_ground_truths(cfg)
         asyncio.run(_run_judge(cfg, inference_outputs, ground_truths))
