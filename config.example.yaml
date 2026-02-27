@@ -56,8 +56,13 @@ concurrency:
 pricing:
   enabled: false
   models:
+    # Inference model pricing
     # gpt-4o:
     #   prompt_per_1k: 2.50     # USD per 1K prompt tokens
+    #   completion_per_1k: 10.00
+    # Judge pricing (key must match judging.judges[].name)
+    # gpt4o:
+    #   prompt_per_1k: 2.50
     #   completion_per_1k: 10.00
 
 logging:

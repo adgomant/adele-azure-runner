@@ -119,6 +119,15 @@ def summarize(config: AppConfig) -> dict[str, Any]:
         entry["completion_tokens"] += rec.tokens_completion or 0
         entry["total_tokens"] += (rec.tokens_prompt or 0) + (rec.tokens_completion or 0)
 
+    # Judge token usage (keyed by judge_name so users can price judges independently)
+    for jr in judge_records:
+        entry = token_usage.setdefault(
+            jr.judge_name, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        )
+        entry["prompt_tokens"] += jr.tokens_prompt or 0
+        entry["completion_tokens"] += jr.tokens_completion or 0
+        entry["total_tokens"] += (jr.tokens_prompt or 0) + (jr.tokens_completion or 0)
+
     # ----- Estimated cost (if pricing enabled) -----
     estimated_cost: dict[str, float] = {}
     if config.pricing.enabled:

@@ -34,6 +34,8 @@ class JudgeOutput(BaseModel):
     reason: str
     raw_output: str
     judge_prompt: str
+    tokens_prompt: int | None = None
+    tokens_completion: int | None = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     run_id: str = ""
 

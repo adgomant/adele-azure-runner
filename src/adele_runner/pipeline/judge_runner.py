@@ -234,6 +234,7 @@ class JudgeAdapter:
             )
             raise
         raw = response.choices[0].message.content or ""
+        usage = response.usage
 
         parsed = parse_judge_v2(raw) if prompt_template == "v2" else parse_judge_json(raw)
 
@@ -246,6 +247,8 @@ class JudgeAdapter:
             reason=parsed["reason"],
             raw_output=raw,
             judge_prompt=judge_prompt,
+            tokens_prompt=usage.prompt_tokens if usage else None,
+            tokens_completion=usage.completion_tokens if usage else None,
             run_id=self._app_cfg.run.run_id,
         )
 
@@ -285,8 +288,8 @@ class JudgeBatchAdapter:
         requests: list[tuple[str, str]],
         run_dir: Path,
         max_poll_time_s: float = 3600.0,
-    ) -> dict[str, str]:
-        """Submit batch, poll, return {custom_id: raw_response_text}.
+    ) -> dict[str, dict[str, Any]]:
+        """Submit batch, poll, return {custom_id: {content, prompt_tokens, completion_tokens}}.
 
         *requests* is a list of ``(custom_id, prompt)`` tuples.
         *max_poll_time_s* is the maximum time to spend polling before raising TimeoutError.
@@ -358,7 +361,7 @@ class JudgeBatchAdapter:
 
         # Download results
         result_content = self._client.files.content(batch.output_file_id)
-        results: dict[str, str] = {}
+        results: dict[str, dict[str, Any]] = {}
         for line in result_content.text.splitlines():
             if not line.strip():
                 continue
@@ -366,8 +369,13 @@ class JudgeBatchAdapter:
             custom_id = obj.get("custom_id", "")
             body = obj.get("response", {}).get("body", {})
             choices = body.get("choices", [])
+            usage = body.get("usage", {})
             content = choices[0]["message"]["content"] if choices else ""
-            results[custom_id] = content
+            results[custom_id] = {
+                "content": content,
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+            }
 
         logger.info("Judge batch [%s]: %d results downloaded.", self._judge_cfg.name, len(results))
         return results
@@ -485,12 +493,13 @@ def _run_batch_judges(
         adapter = JudgeBatchAdapter(judge_cfg, config)
         raw_results = adapter.run_batch(requests, run_dir, max_poll_time_s=max_poll_time_s)
 
-        for custom_id, raw_text in raw_results.items():
+        for custom_id, result_data in raw_results.items():
             meta = request_meta.get(custom_id)
             if meta is None:
                 logger.warning("Batch judge [%s]: unknown custom_id %s", judge_cfg.name, custom_id)
                 continue
             inf_out, judge_prompt = meta
+            raw_text = result_data["content"]
 
             if prompt_template == "v2":
                 parsed = parse_judge_v2(raw_text)
@@ -506,6 +515,8 @@ def _run_batch_judges(
                 reason=parsed["reason"],
                 raw_output=raw_text,
                 judge_prompt=judge_prompt,
+                tokens_prompt=result_data.get("prompt_tokens"),
+                tokens_completion=result_data.get("completion_tokens"),
                 run_id=config.run.run_id,
             )
             append_jsonl(judge_path, output)

@@ -118,12 +118,26 @@ Each judge entry:
 | `enabled` | `bool` | `false` | Enable cost estimation in metrics summary |
 | `models` | `dict` | `{}` | Per-model pricing (see below) |
 
-Each model pricing entry (keyed by model name):
+Each model pricing entry (keyed by model name or judge name):
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `prompt_per_1k` | `float` | `0.0` | Cost in USD per 1,000 prompt tokens |
 | `completion_per_1k` | `float` | `0.0` | Cost in USD per 1,000 completion tokens |
+
+Cost estimation covers both inference and judging. Inference models are keyed by `inference.model` (the model name). Judge models are keyed by `judging.judges[].name` (the judge display name). For example:
+
+```yaml
+pricing:
+  enabled: true
+  models:
+    gpt-4o:                # inference model
+      prompt_per_1k: 2.50
+      completion_per_1k: 10.00
+    gpt4o:                 # judge (matches judging.judges[].name)
+      prompt_per_1k: 2.50
+      completion_per_1k: 10.00
+```
 
 ## Environment Variables
 
