@@ -1,0 +1,47 @@
+# Config with Azure OpenAI Batch API enabled for inference and one batch judge.
+#
+# Usage:
+#   cp examples/config.batch-mode.yaml config.yaml
+#   export AZURE_AI_API_KEY="<your-foundry-key>"
+#   export AZURE_OPENAI_API_KEY="<your-aoai-key>"
+#   uv run adele-runner run-all --model gpt-4o
+
+run:
+  run_id: "batch_mode_run"
+  output_dir: "runs"
+
+dataset:
+  hf_id: "CFI-Kinds-of-Intelligence/ADeLe_battery_v1dot0"
+  split: "train"
+  limit: 50
+
+inference:
+  mode: "auto"                    # resolves to batch since batch.enabled is true
+  foundry:
+    endpoint: "https://<YOUR-RESOURCE>.services.ai.azure.com/models"
+    api_key_env: "AZURE_AI_API_KEY"
+    model: ""
+    temperature: 0.0
+    max_tokens: 2048
+  batch:
+    enabled: true
+    azure_openai_endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
+    api_key_env: "AZURE_OPENAI_API_KEY"
+    deployment: "<DEPLOYMENT_NAME>"
+    api_version: "<API_VERSION>"
+    completion_window: "24h"
+
+concurrency:
+  max_in_flight: 16
+  max_poll_time_s: 3600           # 1 hour timeout for batch polling
+
+judging:
+  enabled: true
+  prompt_template: "v1"
+  judges:
+    - name: "gpt4o-batch"
+      provider: "batch"
+      model: "gpt-4o"
+
+logging:
+  level: "INFO"

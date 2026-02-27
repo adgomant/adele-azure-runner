@@ -1,0 +1,62 @@
+# Config with multiple judges (mixed Foundry + Batch), v2 template, and pricing.
+#
+# Usage:
+#   cp examples/config.multi-judge.yaml config.yaml
+#   export AZURE_AI_API_KEY="<your-foundry-key>"
+#   export AZURE_OPENAI_API_KEY="<your-aoai-key>"
+#   uv run adele-runner run-all --model gpt-4o
+
+run:
+  run_id: "multi_judge_run"
+  output_dir: "runs"
+
+dataset:
+  hf_id: "CFI-Kinds-of-Intelligence/ADeLe_battery_v1dot0"
+  split: "train"
+  limit: 50
+
+inference:
+  mode: "auto"
+  foundry:
+    endpoint: "https://<YOUR-RESOURCE>.services.ai.azure.com/models"
+    api_key_env: "AZURE_AI_API_KEY"
+    model: ""
+    temperature: 0.0
+    max_tokens: 2048
+  batch:
+    enabled: true
+    azure_openai_endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
+    api_key_env: "AZURE_OPENAI_API_KEY"
+    deployment: "<DEPLOYMENT_NAME>"
+    api_version: "<API_VERSION>"
+
+concurrency:
+  max_in_flight: 16
+  max_poll_time_s: 3600
+
+judging:
+  enabled: true
+  prompt_template: "v2"           # bare-integer scoring (1-5)
+  judges:
+    - name: "gpt4o-foundry"
+      provider: "foundry"
+      model: "gpt-4o"
+    - name: "claude-foundry"
+      provider: "foundry"
+      model: "claude-3-opus"
+    - name: "gpt4o-batch"
+      provider: "batch"
+      model: "gpt-4o"
+
+pricing:
+  enabled: true
+  models:
+    gpt-4o:
+      prompt_per_1k: 2.50         # USD per 1K prompt tokens
+      completion_per_1k: 10.00
+    claude-3-opus:
+      prompt_per_1k: 15.00
+      completion_per_1k: 75.00
+
+logging:
+  level: "INFO"
