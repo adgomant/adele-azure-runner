@@ -17,14 +17,14 @@ The CLI automatically loads environment variables from `.env.local` and `.env` i
 
 | File | Purpose | Git-tracked? |
 |---|---|---|
-| `.env` | Shared defaults (non-secret values) | No (gitignored) |
-| `.env.local` | Personal overrides (API keys, secrets) | No (gitignored) |
+| `.env` | Placeholder template showing required variables | Yes (committed with placeholder values) |
+| `.env.local` | Your real API keys and secrets | No (gitignored) |
 
-Example `.env.local`:
+To get started, copy `.env` to `.env.local` and fill in your real keys:
 
-```dotenv
-AZURE_AI_API_KEY=abc123...
-AZURE_OPENAI_API_KEY=xyz789...
+```bash
+cp .env .env.local
+# Edit .env.local with your actual API keys
 ```
 
 Precedence: **shell env** > `.env.local` > `.env`. Both files use `override=False`, so whichever value is set first wins.

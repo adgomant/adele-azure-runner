@@ -7,7 +7,6 @@ dist/
 build/
 .pytest_cache/
 .ruff_cache/
-.env
 .env.local
 .DS_Store
 /PROMPT_AGENT.md

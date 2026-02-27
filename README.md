@@ -36,12 +36,9 @@ uv sync                     # add --extra batch for Azure OpenAI Batch API suppo
 cp config.example.yaml config.yaml
 # Edit config.yaml: set your endpoint, model, and judge settings
 
-# Set API keys (never hardcode)
-export AZURE_AI_API_KEY="<your-foundry-api-key>"
-export AZURE_OPENAI_API_KEY="<your-azure-openai-key>"   # only if using batch mode
-
-# Or use a .env.local file instead (auto-loaded by the CLI)
-# echo 'AZURE_AI_API_KEY=<your-foundry-api-key>' >> .env.local
+# Set API keys -- copy .env to .env.local and fill in your real keys
+cp .env .env.local
+# Edit .env.local with your actual API keys (auto-loaded by the CLI)
 ```
 
 ## Example End-to-End Run
