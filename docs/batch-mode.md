@@ -1,0 +1,134 @@
+# Batch Mode
+
+Azure OpenAI Batch API provides a cost-effective way to run large-scale inference and judging. The runner supports batch mode for both inference and judge evaluation.
+
+## When to Use Batch Mode
+
+Use batch mode when:
+
+- Your target model is deployed as an Azure OpenAI resource (not just Foundry)
+- The deployment supports the [Batch API](https://learn.microsoft.com/en-us/azure/ai-services/openai/how-to/batch)
+- You prioritize throughput and cost over latency (batch jobs can take minutes to hours)
+
+Use Foundry async mode when:
+
+- Your model is deployed only in Azure AI Foundry
+- You need results quickly (async responses are near-real-time)
+- The model/deployment does not support the Batch API
+
+## Config Requirements
+
+```yaml
+inference:
+  mode: "batch"                # or "auto" with batch.enabled: true
+  batch:
+    enabled: true
+    azure_openai_endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
+    api_key_env: "AZURE_OPENAI_API_KEY"
+    deployment: "<DEPLOYMENT_NAME>"
+    api_version: "<API_VERSION>"
+    completion_endpoint: "/chat/completions"
+    completion_window: "24h"
+```
+
+Set the API key:
+
+```bash
+export AZURE_OPENAI_API_KEY="<your-key>"
+```
+
+## Batch Lifecycle
+
+### Inference
+
+```
+1. Build JSONL
+   Each DatasetItem becomes a batch request line:
+   {
+     "custom_id": "<instance_id>",
+     "method": "POST",
+     "url": "/chat/completions",
+     "body": {
+       "model": "<deployment>",
+       "messages": [{"role": "user", "content": "<prompt>"}],
+       "temperature": 0.0,
+       "max_tokens": 2048,
+       "top_p": 1.0
+     }
+   }
+
+2. Upload JSONL file
+   → client.files.create(file=..., purpose="batch")
+
+3. Create batch job
+   → client.batches.create(input_file_id=..., endpoint=..., completion_window=...)
+
+4. Poll for completion
+   → client.batches.retrieve(batch_id) every ~30 seconds
+   → Status progression: validating → in_progress → completed / failed / expired
+
+5. Download results
+   → client.files.content(output_file_id)
+   → Parse each line: extract response content, token usage, finish reason
+
+6. Convert to InferenceOutput
+   → Append to outputs.jsonl
+```
+
+### Judging
+
+The same lifecycle applies to batch judges. Each judge with `provider: "batch"` submits its own batch job. The request body includes the judge prompt with the model output and ground truth embedded.
+
+## Polling and Timeouts
+
+The runner polls the Batch API every ~30 seconds. The maximum poll time is controlled by:
+
+```yaml
+concurrency:
+  max_poll_time_s: 3600    # 1 hour (default)
+```
+
+If the batch job does not complete within this window, the runner raises `TimeoutError`. Increase `max_poll_time_s` for large batch jobs or set a generous `completion_window` in the batch config.
+
+## Inference Parameters
+
+Batch requests use the same inference parameters as Foundry mode:
+
+| Parameter | Config field | Default |
+|---|---|---|
+| `temperature` | `inference.foundry.temperature` | `0.0` |
+| `max_tokens` | `inference.foundry.max_tokens` | `2048` |
+| `top_p` | `inference.foundry.top_p` | `1.0` |
+
+## Mixing Batch and Foundry Judges
+
+You can mix both provider types in the same run:
+
+```yaml
+judging:
+  judges:
+    - name: "gpt4o-batch"
+      provider: "batch"
+      model: "gpt-4o"
+    - name: "claude-foundry"
+      provider: "foundry"
+      model: "claude-3-opus"
+```
+
+Or from the CLI:
+
+```bash
+uv run adele-runner run-judge --judge gpt-4o:batch --judge claude-3-opus
+```
+
+Foundry judges run as async coroutines while batch judges run in a separate thread. Both execute concurrently via `asyncio.gather()`.
+
+## Optional Dependency
+
+Batch mode requires the `openai` package. Install it with:
+
+```bash
+uv sync --extra batch
+```
+
+If `openai` is not installed and batch mode is requested, the runner will raise an `ImportError`.
