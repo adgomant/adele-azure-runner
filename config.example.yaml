@@ -7,7 +7,6 @@ dataset:
   hf_id: "CFI-Kinds-of-Intelligence/ADeLe_battery_v1dot0"
   split: "train"
   limit: 50           # set null for full
-  seed: 42
 
 inference:
   mode: "auto"        # "auto" | "foundry_async" | "azure_openai_batch"
@@ -16,7 +15,7 @@ inference:
     api_key_env: "AZURE_AI_API_KEY"
     model: "<FOUNDRY_MODEL_ID_OR_DEPLOYMENT>"
     temperature: 0.0
-    max_tokens: 2048
+    max_tokens: 50000
     top_p: 1.0
   batch:
     enabled: false
@@ -33,19 +32,29 @@ concurrency:
   max_retries: 6
   backoff_base_s: 1.0
   backoff_max_s: 30.0
+  max_poll_time_s: 3600      # max seconds to wait for a batch job
 
 judging:
   enabled: true
-  prompt_template: "v1"
+  prompt_template: "v1"      # "v1" (JSON output) or "v2" (bare integer score)
   require_json: true
-  score_threshold: 4
   judges:
     - name: "gpt4o"
-      provider: "foundry"
+      provider: "foundry"       # "foundry" (async) or "batch" (Azure OpenAI Batch API)
       model: "<FOUNDRY_GPT4O_MODEL_ID>"
     - name: "claude"
       provider: "foundry"
       model: "<FOUNDRY_CLAUDE_MODEL_ID>"
+    # - name: "gpt-4o-batch"
+    #   provider: "batch"       # uses inference.batch connection settings
+    #   model: "gpt-4o"
+
+pricing:
+  enabled: false
+  models:
+    # gpt-4o:
+    #   prompt_per_1k: 2.50     # USD per 1K prompt tokens
+    #   completion_per_1k: 10.00
 
 logging:
   level: "INFO"
