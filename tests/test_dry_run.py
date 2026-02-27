@@ -73,3 +73,31 @@ def test_dry_run_with_pricing():
         },
     )
     _print_dry_run(cfg, items_count=5)
+
+
+def test_dry_run_with_rate_limits(capsys):
+    """Dry-run should show rate limits and computed concurrency when configured."""
+    cfg = _cfg(
+        azure={"foundry": {"endpoint": "https://real.com"}},
+        inference={
+            "model": "m",
+            "max_tokens": 2048,
+            "rate_limits": {"tokens_per_minute": 80_000, "requests_per_minute": 300},
+        },
+    )
+    cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, cfg.inference.max_tokens)
+    _print_dry_run(cfg, items_count=10)
+    out = capsys.readouterr().out
+    assert "TPM=" in out
+    assert "max_in_flight" in out
+
+
+def test_dry_run_without_rate_limits_shows_concurrency(capsys):
+    """Dry-run should show concurrency params even without rate limits."""
+    cfg = _cfg(
+        azure={"foundry": {"endpoint": "https://real.com"}},
+        inference={"model": "m"},
+    )
+    _print_dry_run(cfg, items_count=5)
+    out = capsys.readouterr().out
+    assert "max_in_flight" in out

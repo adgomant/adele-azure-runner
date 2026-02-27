@@ -19,6 +19,7 @@ class FoundryAdapter:
     def __init__(self, config: AppConfig) -> None:
         self._cfg = config
         self._client = self._build_client()
+        self._rate_limit_warned = False
 
     def _build_client(self) -> Any:
         try:
@@ -32,6 +33,55 @@ class FoundryAdapter:
             endpoint=self._cfg.azure.foundry.endpoint,
             credential=AzureKeyCredential(api_key),
         )
+
+    def _on_response(self, response: Any) -> None:
+        """Capture rate-limit headers from Azure pipeline responses."""
+        try:
+            headers = dict(response.http_response.headers)
+        except AttributeError:
+            return
+        self._check_rate_limit_headers(headers)
+
+    def _check_rate_limit_headers(self, headers: dict[str, str]) -> None:
+        """Log a warning if actual rate limits differ significantly from config."""
+        if self._rate_limit_warned:
+            return
+
+        rl = self._cfg.inference.rate_limits
+        if rl is None:
+            return
+
+        actual_tpm_str = headers.get("x-ratelimit-limit-tokens")
+        actual_rpm_str = headers.get("x-ratelimit-limit-requests")
+
+        if actual_tpm_str is None and actual_rpm_str is None:
+            return
+
+        self._rate_limit_warned = True
+
+        if actual_tpm_str:
+            try:
+                actual_tpm = int(actual_tpm_str)
+                if abs(actual_tpm - rl.tokens_per_minute) / max(1, rl.tokens_per_minute) > 0.2:
+                    logger.warning(
+                        "Actual TPM from Azure (%d) differs from config (%d) by >20%%",
+                        actual_tpm,
+                        rl.tokens_per_minute,
+                    )
+            except (ValueError, TypeError):
+                pass
+
+        if actual_rpm_str:
+            try:
+                actual_rpm = int(actual_rpm_str)
+                if abs(actual_rpm - rl.requests_per_minute) / max(1, rl.requests_per_minute) > 0.2:
+                    logger.warning(
+                        "Actual RPM from Azure (%d) differs from config (%d) by >20%%",
+                        actual_rpm,
+                        rl.requests_per_minute,
+                    )
+            except (ValueError, TypeError):
+                pass
 
     async def infer(self, item: DatasetItem) -> InferenceOutput:
         """Run a single inference call and return a structured output."""
@@ -52,6 +102,7 @@ class FoundryAdapter:
                     temperature=inf.temperature,
                     max_tokens=inf.max_tokens,
                     top_p=inf.top_p,
+                    raw_response_hook=self._on_response,
                 ),
                 timeout=timeout_s,
             )

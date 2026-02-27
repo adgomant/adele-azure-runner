@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -10,9 +11,18 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Sub-models
 # ---------------------------------------------------------------------------
+
+
+class RateLimitsConfig(BaseModel):
+    """Rate limits for an Azure Foundry deployment (from Azure portal)."""
+
+    tokens_per_minute: int
+    requests_per_minute: int
 
 
 class AzureFoundryConnection(BaseModel):
@@ -25,6 +35,8 @@ class AzureBatchConnection(BaseModel):
     api_key_env: str = "AZURE_OPENAI_API_KEY"
     api_version: str = ""
     completion_endpoint: str = "/chat/completions"
+    max_requests_per_file: int = 50_000
+    max_bytes_per_file: int = 100_000_000  # 100 MB
 
 
 class AzureConfig(BaseModel):
@@ -50,6 +62,7 @@ class InferenceConfig(BaseModel):
     temperature: float = 0.0
     max_tokens: int = 2048
     top_p: float = 1.0
+    rate_limits: RateLimitsConfig | None = None
 
 
 class ConcurrencyConfig(BaseModel):
@@ -66,6 +79,7 @@ class JudgeConfig(BaseModel):
     name: str
     provider: Literal["foundry", "batch"] = "foundry"
     model: str
+    rate_limits: RateLimitsConfig | None = None
 
 
 class JudgingConfig(BaseModel):
@@ -99,6 +113,48 @@ class PricingConfig(BaseModel):
 
 
 _PLACEHOLDER_RE = re.compile(r"<[A-Z_-]+>")
+
+
+def compute_concurrency_from_rate_limits(
+    rate_limits: RateLimitsConfig,
+    max_tokens: int,
+) -> ConcurrencyConfig:
+    """Compute optimal concurrency parameters from Azure rate limits.
+
+    Uses TPM, RPM, and ``max_tokens`` to derive safe values for
+    ``max_in_flight``, ``request_timeout_s``, and backoff parameters.
+    """
+    tpm = rate_limits.tokens_per_minute
+    rpm = rate_limits.requests_per_minute
+
+    # Worst-case tokens per request (prompt + completion ≈ max_tokens)
+    est_tokens_per_request = max(1, max_tokens)
+
+    # Max RPM the token budget allows
+    rpm_from_tpm = tpm / est_tokens_per_request
+
+    # Effective RPM = tighter constraint
+    effective_rpm = min(rpm, rpm_from_tpm)
+
+    # Estimate avg request duration from max_tokens (~80 tok/s, capped 2–300s)
+    avg_duration_s = max(2.0, min(300.0, max_tokens / 80))
+
+    # max_in_flight ≈ effective_rpm * avg_duration / 60, 80% safety margin
+    max_in_flight = max(1, int(effective_rpm * avg_duration_s / 60 * 0.8))
+
+    # request_timeout_s: generation time + 10s overhead, capped 30–600s
+    request_timeout_s = round(max(30.0, min(600.0, max_tokens / 50 + 10)), 1)
+
+    # backoff: base scales with rate limit density
+    backoff_base_s = round(max(0.5, min(10.0, 60.0 / max(1, effective_rpm))), 1)
+    backoff_max_s = round(max(30.0, min(120.0, backoff_base_s * 10)), 1)
+
+    return ConcurrencyConfig(
+        max_in_flight=max_in_flight,
+        request_timeout_s=request_timeout_s,
+        backoff_base_s=backoff_base_s,
+        backoff_max_s=backoff_max_s,
+    )
 
 
 class AppConfig(BaseModel):
@@ -136,6 +192,51 @@ class AppConfig(BaseModel):
             return "batch"
         return "foundry"
 
+    def apply_rate_limit_overrides(
+        self,
+        rate_limits: RateLimitsConfig | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
+        """Override concurrency settings with values computed from rate limits.
+
+        When *rate_limits* is ``None`` the call is a no-op.
+        """
+        if rate_limits is None:
+            return
+
+        mt = max_tokens or self.inference.max_tokens
+        computed = compute_concurrency_from_rate_limits(rate_limits, mt)
+
+        # Preserve non-rate-limit params from user config
+        computed.max_retries = self.concurrency.max_retries
+        computed.max_poll_time_s = self.concurrency.max_poll_time_s
+        computed.batch_completion_window = self.concurrency.batch_completion_window
+
+        self.concurrency = computed
+
+        logger.info(
+            "Rate-limit auto-tuning: TPM=%d RPM=%d max_tokens=%d → "
+            "max_in_flight=%d request_timeout=%.1fs backoff=%.1f–%.1fs",
+            rate_limits.tokens_per_minute,
+            rate_limits.requests_per_minute,
+            mt,
+            computed.max_in_flight,
+            computed.request_timeout_s,
+            computed.backoff_base_s,
+            computed.backoff_max_s,
+        )
+
+    def get_most_restrictive_judge_rate_limits(self) -> RateLimitsConfig | None:
+        """Return the most restrictive rate limits among foundry judges, or ``None``."""
+        limits = [
+            j.rate_limits
+            for j in self.judging.judges
+            if j.provider == "foundry" and j.rate_limits is not None
+        ]
+        if not limits:
+            return None
+        return min(limits, key=lambda rl: rl.tokens_per_minute)
+
     def validate_config(self, *, dry_run: bool = False) -> list[str]:
         """Validate config for common mistakes. Returns list of error messages."""
         errors: list[str] = []
@@ -168,6 +269,28 @@ class AppConfig(BaseModel):
         if self.judging.prompt_template not in ("v1", "v2"):
             errors.append(
                 f"Unknown judge prompt template: '{self.judging.prompt_template}'. Use 'v1' or 'v2'."
+            )
+
+        # Batch splitting limits must not exceed Azure hard maximums
+        from adele_runner.utils.batch_split import (
+            AZURE_BATCH_MAX_FILE_BYTES,
+            AZURE_BATCH_MAX_REQUESTS,
+        )
+
+        batch = self.azure.batch
+        if batch.max_requests_per_file < 1:
+            errors.append("azure.batch.max_requests_per_file must be at least 1.")
+        elif batch.max_requests_per_file > AZURE_BATCH_MAX_REQUESTS:
+            errors.append(
+                f"azure.batch.max_requests_per_file ({batch.max_requests_per_file}) "
+                f"exceeds Azure maximum ({AZURE_BATCH_MAX_REQUESTS})."
+            )
+        if batch.max_bytes_per_file < 1:
+            errors.append("azure.batch.max_bytes_per_file must be at least 1.")
+        elif batch.max_bytes_per_file > AZURE_BATCH_MAX_FILE_BYTES:
+            errors.append(
+                f"azure.batch.max_bytes_per_file ({batch.max_bytes_per_file}) "
+                f"exceeds Azure maximum ({AZURE_BATCH_MAX_FILE_BYTES})."
             )
 
         return errors

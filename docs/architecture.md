@@ -155,7 +155,7 @@ The retry module (`utils/retry.py`) wraps [tenacity](https://tenacity.readthedoc
 
 **Unknown** exceptions are retried (fail-open).
 
-Backoff is exponential, starting at `backoff_base_s` and capped at `backoff_max_s`.
+Backoff is exponential, starting at `backoff_base_s` and capped at `backoff_max_s`. When a 429 response includes `Retry-After` or `x-ratelimit-reset-tokens` headers, the retry system uses the server-specified wait time instead of generic exponential backoff.
 
 ## Config System
 
@@ -178,13 +178,16 @@ AppConfig.model_validate()  ← Pydantic validation
 apply_cli_overrides()   ← --model, --mode, --judge, --judge-template
     │
     ▼
+apply_rate_limit_overrides()  ← Auto-compute concurrency from TPM/RPM
+    │                            (foundry provider only; re-applied before judging)
+    ▼
 validate_config()       ← Placeholder detection, required fields
 ```
 
 The config has a clear separation:
 - **`azure`** section: connection settings (endpoints, API key env vars) — set once per environment
-- **`inference`** section: model name and sampling parameters — change per run
-- **`judging`** section: judge models and templates — change per run
+- **`inference`** section: model name, sampling parameters, and rate limits — change per run
+- **`judging`** section: judge models, templates, and per-judge rate limits — change per run
 - **`concurrency`** section: timeouts, retries, and batch completion window
 
 Pydantic models define all fields with defaults, so a minimal YAML works. CLI flags override specific values. Validation catches common mistakes (placeholder endpoints, missing models) before API calls.

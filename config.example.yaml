@@ -8,6 +8,8 @@ azure:
     api_key_env: "AZURE_OPENAI_API_KEY"
     api_version: "<API_VERSION>"
     completion_endpoint: "/chat/completions"
+    max_requests_per_file: 99000     # Max requests per batch file (Azure limit: 100000)
+    max_bytes_per_file: 190000000    # Max bytes per batch file (Azure limit: 200000000)
 
 # ── Run settings ──────────────────────────────────────────────
 run:
@@ -27,6 +29,9 @@ inference:
   temperature: 0.0
   max_tokens: 50000
   top_p: 1.0
+  # rate_limits:                    # Optional: auto-tunes concurrency params (foundry only)
+  #   tokens_per_minute: 80000
+  #   requests_per_minute: 300
 
 # ── Judging ───────────────────────────────────────────────────
 judging:
@@ -36,6 +41,9 @@ judging:
     - name: "gpt4o"
       provider: "foundry"       # "foundry" (async) or "batch" (Azure OpenAI Batch API)
       model: "<FOUNDRY_GPT4O_MODEL_ID>"
+      # rate_limits:            # Optional: per-judge rate limits (foundry only)
+      #   tokens_per_minute: 80000
+      #   requests_per_minute: 300
     - name: "claude"
       provider: "foundry"
       model: "<FOUNDRY_CLAUDE_MODEL_ID>"

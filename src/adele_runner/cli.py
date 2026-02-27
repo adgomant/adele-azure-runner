@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
 
-from adele_runner.config import AppConfig, JudgeConfig, load_config
+from adele_runner.config import AppConfig, JudgeConfig, RateLimitsConfig, load_config
 from adele_runner.schemas import InferenceOutput
 
 # Valid inference mode values for CLI --mode flag.
@@ -54,30 +54,64 @@ _VALID_JUDGE_PROVIDERS = {"foundry", "batch"}
 def _parse_judge_flag(value: str) -> JudgeConfig:
     """Parse a ``--judge`` value into a :class:`JudgeConfig`.
 
-    Accepted formats: ``MODEL`` (foundry) or ``MODEL:batch``.
+    Accepted formats::
+
+        MODEL                   → foundry, no rate limits
+        MODEL:PROVIDER          → explicit provider, no rate limits
+        MODEL:PROVIDER:TPM:RPM  → explicit provider + rate limits
+
+    Batch judges cannot have rate limits (raises :class:`~typer.BadParameter`).
     """
-    if ":" in value:
-        model, provider = value.rsplit(":", 1)
-        if provider not in _VALID_JUDGE_PROVIDERS:
+    parts = value.split(":")
+
+    if len(parts) == 1:
+        model, provider = parts[0], "foundry"
+        rate_limits = None
+    elif len(parts) == 2:
+        model, provider = parts
+        rate_limits = None
+    elif len(parts) == 4:
+        model, provider, tpm_str, rpm_str = parts
+        try:
+            tpm = int(tpm_str)
+            rpm = int(rpm_str)
+        except ValueError:
             raise typer.BadParameter(
-                f"Invalid judge provider '{provider}' in '{value}'. Use MODEL or MODEL:batch."
-            )
+                f"Invalid rate limits in '{value}'. TPM and RPM must be integers."
+            ) from None
+        rate_limits = RateLimitsConfig(tokens_per_minute=tpm, requests_per_minute=rpm)
     else:
-        model, provider = value, "foundry"
-    return JudgeConfig(name=model, provider=provider, model=model)  # type: ignore[arg-type]
+        raise typer.BadParameter(
+            f"Invalid judge format '{value}'. Use MODEL, MODEL:PROVIDER, or MODEL:PROVIDER:TPM:RPM."
+        )
+
+    if provider not in _VALID_JUDGE_PROVIDERS:
+        raise typer.BadParameter(
+            f"Invalid judge provider '{provider}' in '{value}'. Use 'foundry' or 'batch'."
+        )
+
+    if rate_limits is not None and provider == "batch":
+        raise typer.BadParameter(
+            f"Rate limits are not supported for batch judges ('{value}'). "
+            "Batch judges use file splitting, not rate limiting."
+        )
+
+    return JudgeConfig(name=model, provider=provider, model=model, rate_limits=rate_limits)  # type: ignore[arg-type]
 
 
 def apply_cli_overrides(
     cfg: AppConfig,
     *,
     mode: str | None = None,
-    models: list[str] | None = None,
+    model: str | None = None,
     judges: list[str] | None = None,
     judge_template: str | None = None,
+    tpm: int | None = None,
+    rpm: int | None = None,
 ) -> None:
     """Mutate *cfg* in-place with CLI flag overrides.
 
-    *models* sets the first model only (multi-model loop is handled by the caller).
+    CLI values always take precedence over config-file values.
     """
     if mode is not None:
         if mode not in _VALID_MODES:
@@ -86,8 +120,8 @@ def apply_cli_overrides(
             )
         cfg.inference.mode = mode  # type: ignore[assignment]
 
-    if models:
-        cfg.inference.model = models[0]
+    if model is not None:
+        cfg.inference.model = model
 
     if judges:
         cfg.judging.judges = [_parse_judge_flag(j) for j in judges]
@@ -95,6 +129,12 @@ def apply_cli_overrides(
 
     if judge_template is not None:
         cfg.judging.prompt_template = judge_template
+
+    # --tpm and --rpm must both be provided or both omitted
+    if tpm is not None or rpm is not None:
+        if tpm is None or rpm is None:
+            raise typer.BadParameter("--tpm and --rpm must both be provided together.")
+        cfg.inference.rate_limits = RateLimitsConfig(tokens_per_minute=tpm, requests_per_minute=rpm)
 
 
 def _validate_or_exit(cfg: AppConfig, *, dry_run: bool = False) -> None:
@@ -153,11 +193,6 @@ def _load_ground_truths(cfg: AppConfig) -> dict[str, str]:
     return gt_map
 
 
-def _set_model_for_run(cfg: AppConfig, model: str) -> None:
-    """Point config at *model* for the next inference run."""
-    cfg.inference.model = model
-
-
 def _print_dry_run(cfg: AppConfig, *, items_count: int | None = None) -> None:
     """Print a dry-run summary and exit."""
     from adele_runner.utils.io import build_dedup_index
@@ -196,6 +231,24 @@ def _print_dry_run(cfg: AppConfig, *, items_count: int | None = None) -> None:
     if cfg.pricing.enabled:
         console.print(f"  Pricing:        enabled ({len(cfg.pricing.models)} models configured)")
 
+    # Concurrency info (especially useful when rate-limit auto-tuning is active)
+    rl = cfg.inference.rate_limits
+    if rl is not None:
+        console.print(
+            f"  Rate limits:    TPM={rl.tokens_per_minute:,}  RPM={rl.requests_per_minute:,}"
+        )
+    judge_rl = cfg.get_most_restrictive_judge_rate_limits()
+    if judge_rl is not None:
+        console.print(
+            f"  Judge limits:   TPM={judge_rl.tokens_per_minute:,}  RPM={judge_rl.requests_per_minute:,}"
+        )
+    cc = cfg.concurrency
+    console.print(
+        f"  Concurrency:    max_in_flight={cc.max_in_flight}  "
+        f"timeout={cc.request_timeout_s:.0f}s  "
+        f"backoff={cc.backoff_base_s:.1f}–{cc.backoff_max_s:.1f}s"
+    )
+
     console.print("[bold cyan]--- (no API calls made) ---[/bold cyan]\n")
 
 
@@ -207,12 +260,12 @@ def _print_dry_run(cfg: AppConfig, *, items_count: int | None = None) -> None:
 @app.command()
 def run_inference(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to YAML config."),
-    model: list[str] | None = typer.Option(
-        None, "--model", "-m", help="Model name(s). Repeatable."
-    ),
+    model: str | None = typer.Option(None, "--model", "-m", help="Model name or deployment."),
     mode: str | None = typer.Option(
         None, "--mode", help="Inference mode: foundry, batch, or auto."
     ),
+    tpm: int | None = typer.Option(None, "--tpm", help="Tokens per minute rate limit (foundry)."),
+    rpm: int | None = typer.Option(None, "--rpm", help="Requests per minute rate limit (foundry)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print plan and exit without API calls."),
 ) -> None:
     """Run inference over the ADeLe dataset."""
@@ -221,7 +274,9 @@ def run_inference(
 
     cfg = _get_config(config)
     _setup_logging(cfg.logging.level)
-    apply_cli_overrides(cfg, mode=mode, models=model)
+    apply_cli_overrides(cfg, mode=mode, model=model, tpm=tpm, rpm=rpm)
+    if cfg.resolve_inference_mode() == "foundry":
+        cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, cfg.inference.max_tokens)
 
     items = load_adele(
         hf_id=cfg.dataset.hf_id,
@@ -234,18 +289,7 @@ def run_inference(
         return
 
     _validate_or_exit(cfg)
-
-    # Multi-model support: loop over each model
-    models_to_run = model if model and len(model) > 1 else None
-
-    if models_to_run:
-        for m in models_to_run:
-            _set_model_for_run(cfg, m)
-            console.print(f"\n[bold]Running inference for model: {m}[/bold]")
-            asyncio.run(_run(cfg, items))
-    else:
-        asyncio.run(_run(cfg, items))
-
+    asyncio.run(_run(cfg, items))
     console.print("[bold green]Inference complete.[/bold green]")
 
 
@@ -253,7 +297,10 @@ def run_inference(
 def run_judge(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to YAML config."),
     judge: list[str] | None = typer.Option(
-        None, "--judge", "-j", help="Judge model (MODEL or MODEL:batch). Repeatable."
+        None,
+        "--judge",
+        "-j",
+        help="Judge model. Format: MODEL, MODEL:PROVIDER, or MODEL:PROVIDER:TPM:RPM. Repeatable.",
     ),
     judge_template: str | None = typer.Option(
         None, "--judge-template", help="Judge prompt template: v1 or v2."
@@ -267,6 +314,9 @@ def run_judge(
     cfg = _get_config(config)
     _setup_logging(cfg.logging.level)
     apply_cli_overrides(cfg, judges=judge, judge_template=judge_template)
+    judge_rl = cfg.get_most_restrictive_judge_rate_limits()
+    if judge_rl is not None:
+        cfg.apply_rate_limit_overrides(judge_rl, max_tokens=512)
 
     outputs_path = cfg.outputs_path()
     if not outputs_path.exists():
@@ -319,14 +369,17 @@ def summarize(
 @app.command()
 def run_all(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to YAML config."),
-    model: list[str] | None = typer.Option(
-        None, "--model", "-m", help="Model name(s). Repeatable."
-    ),
+    model: str | None = typer.Option(None, "--model", "-m", help="Model name or deployment."),
     mode: str | None = typer.Option(
         None, "--mode", help="Inference mode: foundry, batch, or auto."
     ),
+    tpm: int | None = typer.Option(None, "--tpm", help="Tokens per minute rate limit (foundry)."),
+    rpm: int | None = typer.Option(None, "--rpm", help="Requests per minute rate limit (foundry)."),
     judge: list[str] | None = typer.Option(
-        None, "--judge", "-j", help="Judge model (MODEL or MODEL:batch). Repeatable."
+        None,
+        "--judge",
+        "-j",
+        help="Judge model. Format: MODEL, MODEL:PROVIDER, or MODEL:PROVIDER:TPM:RPM. Repeatable.",
     ),
     judge_template: str | None = typer.Option(
         None, "--judge-template", help="Judge prompt template: v1 or v2."
@@ -343,7 +396,13 @@ def run_all(
 
     cfg = _get_config(config)
     _setup_logging(cfg.logging.level)
-    apply_cli_overrides(cfg, mode=mode, models=model, judges=judge, judge_template=judge_template)
+    apply_cli_overrides(
+        cfg, mode=mode, model=model, judges=judge, judge_template=judge_template, tpm=tpm, rpm=rpm
+    )
+
+    # Apply inference rate-limit overrides (foundry only)
+    if cfg.resolve_inference_mode() == "foundry":
+        cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, cfg.inference.max_tokens)
 
     items = load_adele(
         hf_id=cfg.dataset.hf_id,
@@ -357,19 +416,15 @@ def run_all(
 
     _validate_or_exit(cfg)
 
-    # 1. Inference (loop over models if multiple)
-    models_to_run = model if model and len(model) > 1 else None
-    if models_to_run:
-        for m in models_to_run:
-            _set_model_for_run(cfg, m)
-            console.print(f"\n[bold]Running inference for model: {m}[/bold]")
-            asyncio.run(_run_inference(cfg, items))
-    else:
-        asyncio.run(_run_inference(cfg, items))
+    # 1. Inference
+    asyncio.run(_run_inference(cfg, items))
     console.print("[bold green]Inference complete.[/bold green]")
 
-    # 2. Judging
+    # 2. Judging (re-tune concurrency for judge rate limits)
     if cfg.judging.enabled:
+        judge_rl = cfg.get_most_restrictive_judge_rate_limits()
+        if judge_rl is not None:
+            cfg.apply_rate_limit_overrides(judge_rl, max_tokens=512)
         inference_outputs = read_jsonl(cfg.outputs_path(), InferenceOutput)
         ground_truths = _load_ground_truths(cfg)
         asyncio.run(_run_judge(cfg, inference_outputs, ground_truths))

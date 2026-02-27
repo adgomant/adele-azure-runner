@@ -156,3 +156,177 @@ def test_fully_valid_config():
     )
     errors = cfg.validate_config()
     assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# Rate limits config
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limits_parsed_from_config():
+    cfg = _cfg(
+        inference={
+            "model": "m",
+            "rate_limits": {"tokens_per_minute": 80_000, "requests_per_minute": 300},
+        },
+    )
+    rl = cfg.inference.rate_limits
+    assert rl is not None
+    assert rl.tokens_per_minute == 80_000
+    assert rl.requests_per_minute == 300
+
+
+def test_rate_limits_none_by_default():
+    cfg = _cfg()
+    assert cfg.inference.rate_limits is None
+
+
+def test_rate_limits_overrides_concurrency():
+    cfg = _cfg(
+        inference={
+            "model": "m",
+            "max_tokens": 2048,
+            "rate_limits": {"tokens_per_minute": 80_000, "requests_per_minute": 300},
+        },
+        concurrency={"max_in_flight": 999},
+    )
+    cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, cfg.inference.max_tokens)
+    # Should override the explicit max_in_flight=999
+    assert cfg.concurrency.max_in_flight != 999
+    assert cfg.concurrency.max_in_flight >= 1
+
+
+# ---------------------------------------------------------------------------
+# Per-judge rate limits
+# ---------------------------------------------------------------------------
+
+
+def test_judge_rate_limits_parsed():
+    cfg = _cfg(
+        judging={
+            "judges": [
+                {
+                    "name": "j1",
+                    "model": "m1",
+                    "rate_limits": {"tokens_per_minute": 50_000, "requests_per_minute": 200},
+                }
+            ]
+        },
+    )
+    assert cfg.judging.judges[0].rate_limits is not None
+    assert cfg.judging.judges[0].rate_limits.tokens_per_minute == 50_000
+
+
+def test_judge_rate_limits_none_by_default():
+    cfg = _cfg(
+        judging={"judges": [{"name": "j1", "model": "m1"}]},
+    )
+    assert cfg.judging.judges[0].rate_limits is None
+
+
+def test_most_restrictive_judge_rate_limits():
+    cfg = _cfg(
+        judging={
+            "judges": [
+                {
+                    "name": "j1",
+                    "provider": "foundry",
+                    "model": "m1",
+                    "rate_limits": {"tokens_per_minute": 100_000, "requests_per_minute": 500},
+                },
+                {
+                    "name": "j2",
+                    "provider": "foundry",
+                    "model": "m2",
+                    "rate_limits": {"tokens_per_minute": 30_000, "requests_per_minute": 100},
+                },
+            ]
+        },
+    )
+    rl = cfg.get_most_restrictive_judge_rate_limits()
+    assert rl is not None
+    assert rl.tokens_per_minute == 30_000
+
+
+def test_most_restrictive_judge_rate_limits_ignores_batch():
+    cfg = _cfg(
+        judging={
+            "judges": [
+                {
+                    "name": "j1",
+                    "provider": "batch",
+                    "model": "m1",
+                    "rate_limits": {"tokens_per_minute": 10_000, "requests_per_minute": 50},
+                },
+                {
+                    "name": "j2",
+                    "provider": "foundry",
+                    "model": "m2",
+                    "rate_limits": {"tokens_per_minute": 80_000, "requests_per_minute": 300},
+                },
+            ]
+        },
+    )
+    rl = cfg.get_most_restrictive_judge_rate_limits()
+    assert rl is not None
+    # Batch judge should be ignored
+    assert rl.tokens_per_minute == 80_000
+
+
+def test_most_restrictive_judge_rate_limits_none_when_no_foundry():
+    cfg = _cfg(
+        judging={
+            "judges": [
+                {"name": "j1", "provider": "batch", "model": "m1"},
+            ]
+        },
+    )
+    assert cfg.get_most_restrictive_judge_rate_limits() is None
+
+
+# ---------------------------------------------------------------------------
+# Batch splitting limits
+# ---------------------------------------------------------------------------
+
+
+def test_batch_max_requests_exceeds_azure_limit():
+    cfg = _cfg(azure={"batch": {"max_requests_per_file": 200_000}})
+    errors = cfg.validate_config()
+    assert any("max_requests_per_file" in e and "exceeds" in e for e in errors)
+
+
+def test_batch_max_bytes_exceeds_azure_limit():
+    cfg = _cfg(azure={"batch": {"max_bytes_per_file": 300_000_000}})
+    errors = cfg.validate_config()
+    assert any("max_bytes_per_file" in e and "exceeds" in e for e in errors)
+
+
+def test_batch_max_requests_below_one():
+    cfg = _cfg(azure={"batch": {"max_requests_per_file": 0}})
+    errors = cfg.validate_config()
+    assert any("max_requests_per_file" in e and "at least 1" in e for e in errors)
+
+
+def test_batch_max_bytes_below_one():
+    cfg = _cfg(azure={"batch": {"max_bytes_per_file": 0}})
+    errors = cfg.validate_config()
+    assert any("max_bytes_per_file" in e and "at least 1" in e for e in errors)
+
+
+def test_batch_limits_at_azure_max_ok():
+    cfg = _cfg(
+        azure={
+            "foundry": {"endpoint": "https://real.com"},
+            "batch": {"max_requests_per_file": 100_000, "max_bytes_per_file": 200_000_000},
+        },
+        inference={"model": "m"},
+    )
+    errors = cfg.validate_config()
+    batch_errors = [e for e in errors if "max_requests_per_file" in e or "max_bytes_per_file" in e]
+    assert len(batch_errors) == 0
+
+
+def test_batch_limits_default_values():
+    cfg = _cfg()
+    assert cfg.azure.batch.max_requests_per_file == 50_000
+    assert cfg.azure.batch.max_bytes_per_file == 100_000_000

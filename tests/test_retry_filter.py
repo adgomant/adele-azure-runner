@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from adele_runner.utils.retry import _get_status_code, _is_connection_or_timeout, is_retryable
+from unittest.mock import MagicMock
+
+from adele_runner.utils.retry import (
+    WaitRateLimitAware,
+    _get_status_code,
+    _is_connection_or_timeout,
+    get_retry_after,
+    is_retryable,
+)
 
 # ---------------------------------------------------------------------------
 # Non-retryable logic errors
@@ -143,3 +151,95 @@ class FakeWithCode(Exception):
 
 def test_get_status_code_from_code_attr():
     assert _get_status_code(FakeWithCode(503)) == 503
+
+
+# ---------------------------------------------------------------------------
+# get_retry_after
+# ---------------------------------------------------------------------------
+
+
+class FakeResponseWithHeaders:
+    def __init__(self, headers: dict):
+        self.headers = headers
+
+
+class FakeExcWithResponse(Exception):
+    def __init__(self, headers: dict):
+        self.response = FakeResponseWithHeaders(headers)
+        super().__init__("fake")
+
+
+def test_retry_after_standard_header():
+    exc = FakeExcWithResponse({"Retry-After": "5"})
+    assert get_retry_after(exc) == 5.0
+
+
+def test_retry_after_lowercase_header():
+    exc = FakeExcWithResponse({"retry-after": "3.5"})
+    assert get_retry_after(exc) == 3.5
+
+
+def test_retry_after_azure_reset_tokens():
+    exc = FakeExcWithResponse({"x-ratelimit-reset-tokens": "6s"})
+    assert get_retry_after(exc) == 6.0
+
+
+def test_retry_after_azure_reset_tokens_no_suffix():
+    exc = FakeExcWithResponse({"x-ratelimit-reset-tokens": "10"})
+    assert get_retry_after(exc) == 10.0
+
+
+def test_retry_after_none_when_no_headers():
+    exc = Exception("no response")
+    assert get_retry_after(exc) is None
+
+
+def test_retry_after_none_when_no_relevant_header():
+    exc = FakeExcWithResponse({"Content-Type": "application/json"})
+    assert get_retry_after(exc) is None
+
+
+def test_retry_after_prefers_retry_after_over_reset_tokens():
+    exc = FakeExcWithResponse(
+        {
+            "Retry-After": "2",
+            "x-ratelimit-reset-tokens": "10",
+        }
+    )
+    # Retry-After is checked first
+    assert get_retry_after(exc) == 2.0
+
+
+# ---------------------------------------------------------------------------
+# WaitRateLimitAware
+# ---------------------------------------------------------------------------
+
+
+def test_wait_rate_limit_aware_uses_retry_after():
+    wait = WaitRateLimitAware(backoff_base=1.0, backoff_max=30.0)
+    exc = FakeExcWithResponse({"Retry-After": "7"})
+    retry_state = MagicMock()
+    retry_state.outcome.exception.return_value = exc
+    result = wait(retry_state)
+    assert result == 7.0
+
+
+def test_wait_rate_limit_aware_caps_at_120():
+    wait = WaitRateLimitAware(backoff_base=1.0, backoff_max=30.0)
+    exc = FakeExcWithResponse({"Retry-After": "999"})
+    retry_state = MagicMock()
+    retry_state.outcome.exception.return_value = exc
+    result = wait(retry_state)
+    assert result == 120.0
+
+
+def test_wait_rate_limit_aware_falls_back_to_exp():
+    wait = WaitRateLimitAware(backoff_base=1.0, backoff_max=30.0)
+    exc = Exception("no retry-after headers")
+    retry_state = MagicMock()
+    retry_state.outcome.exception.return_value = exc
+    retry_state.attempt_number = 1
+    # Should not raise, falls back to exponential
+    result = wait(retry_state)
+    assert isinstance(result, (int, float))
+    assert result >= 0

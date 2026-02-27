@@ -38,42 +38,82 @@ class AzureOpenAIBatchAdapter:
             api_version=self._cfg.azure.batch.api_version,
         )
 
-    def _build_batch_jsonl(self, items: list[DatasetItem], tmp_path: Path) -> Path:
-        """Serialise items into Azure OpenAI batch JSONL format."""
-        tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    def _build_batch_lines(self, items: list[DatasetItem]) -> list[str]:
+        """Serialise items into Azure OpenAI batch JSONL lines."""
         inf = self._cfg.inference
         batch_cfg = self._cfg.azure.batch
-        with tmp_path.open("w", encoding="utf-8") as fh:
-            for item in items:
-                request = {
-                    "custom_id": item.instance_id,
-                    "method": "POST",
-                    "url": batch_cfg.completion_endpoint,
-                    "body": {
-                        "model": inf.model,
-                        "messages": [{"role": "user", "content": item.prompt}],
-                        "temperature": inf.temperature,
-                        "max_tokens": inf.max_tokens,
-                        "top_p": inf.top_p,
-                    },
-                }
-                fh.write(json.dumps(request) + "\n")
-        logger.info("Wrote %d batch requests to %s", len(items), tmp_path)
-        return tmp_path
+        lines: list[str] = []
+        for item in items:
+            request = {
+                "custom_id": item.instance_id,
+                "method": "POST",
+                "url": batch_cfg.completion_endpoint,
+                "body": {
+                    "model": inf.model,
+                    "messages": [{"role": "user", "content": item.prompt}],
+                    "temperature": inf.temperature,
+                    "max_tokens": inf.max_tokens,
+                    "top_p": inf.top_p,
+                },
+            }
+            lines.append(json.dumps(request))
+        return lines
 
     def run_batch(
         self,
         items: list[DatasetItem],
         run_dir: Path,
     ) -> list[InferenceOutput]:
-        """Upload, poll, and download a batch.  Blocking."""
-        batch_input_path = run_dir / "batch_input.jsonl"
-        self._build_batch_jsonl(items, batch_input_path)
+        """Upload, poll, and download a batch.  Blocking.
 
+        Large request sets are automatically split into chunks that respect
+        Azure Batch API limits (request count and file size).
+        """
+        from adele_runner.utils.batch_split import split_batch_requests
+
+        jsonl_lines = self._build_batch_lines(items)
+        batch_cfg = self._cfg.azure.batch
+        chunks = split_batch_requests(
+            jsonl_lines,
+            max_requests=batch_cfg.max_requests_per_file,
+            max_bytes=batch_cfg.max_bytes_per_file,
+        )
+        item_map = {i.instance_id: i for i in items}
+
+        all_outputs: list[InferenceOutput] = []
+        for chunk_idx, chunk in enumerate(chunks):
+            suffix = f"_{chunk_idx}" if len(chunks) > 1 else ""
+            input_path = run_dir / f"batch_input{suffix}.jsonl"
+            input_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with input_path.open("w", encoding="utf-8") as fh:
+                for line in chunk:
+                    fh.write(line + "\n")
+            logger.info(
+                "Batch chunk %d/%d: wrote %d requests to %s",
+                chunk_idx + 1,
+                len(chunks),
+                len(chunk),
+                input_path,
+            )
+
+            chunk_outputs = self._submit_and_poll(input_path, item_map, chunk_idx)
+            all_outputs.extend(chunk_outputs)
+
+        logger.info("Batch completed: %d total results.", len(all_outputs))
+        return all_outputs
+
+    def _submit_and_poll(
+        self,
+        input_path: Path,
+        item_map: dict[str, DatasetItem],
+        chunk_idx: int,
+    ) -> list[InferenceOutput]:
+        """Upload, create batch, poll, and download results for a single chunk."""
         batch_cfg = self._cfg.azure.batch
 
         # Upload file
-        with batch_input_path.open("rb") as fh:
+        with input_path.open("rb") as fh:
             file_obj = self._client.files.create(file=fh, purpose="batch")
         logger.info("Uploaded batch file: %s", file_obj.id)
 
@@ -104,7 +144,6 @@ class AzureOpenAIBatchAdapter:
         # Download results
         result_content = self._client.files.content(batch.output_file_id)
         outputs: list[InferenceOutput] = []
-        item_map = {i.instance_id: i for i in items}
 
         for line in result_content.text.splitlines():
             if not line.strip():
@@ -129,5 +168,4 @@ class AzureOpenAIBatchAdapter:
                 )
             )
 
-        logger.info("Batch completed: %d results downloaded.", len(outputs))
         return outputs

@@ -189,6 +189,7 @@ class JudgeAdapter:
         self._judge_cfg = judge_cfg
         self._app_cfg = app_cfg
         self._client = self._build_client()
+        self._rate_limit_warned = False
 
     def _build_client(self) -> Any:
         try:
@@ -202,6 +203,57 @@ class JudgeAdapter:
             endpoint=self._app_cfg.azure.foundry.endpoint,
             credential=AzureKeyCredential(api_key),
         )
+
+    def _on_response(self, response: Any) -> None:
+        """Capture rate-limit headers from Azure pipeline responses."""
+        try:
+            headers = dict(response.http_response.headers)
+        except AttributeError:
+            return
+        self._check_rate_limit_headers(headers)
+
+    def _check_rate_limit_headers(self, headers: dict[str, str]) -> None:
+        """Log a warning if actual rate limits differ significantly from config."""
+        if self._rate_limit_warned:
+            return
+
+        rl = self._judge_cfg.rate_limits
+        if rl is None:
+            return
+
+        actual_tpm_str = headers.get("x-ratelimit-limit-tokens")
+        actual_rpm_str = headers.get("x-ratelimit-limit-requests")
+
+        if actual_tpm_str is None and actual_rpm_str is None:
+            return
+
+        self._rate_limit_warned = True
+
+        if actual_tpm_str:
+            try:
+                actual_tpm = int(actual_tpm_str)
+                if abs(actual_tpm - rl.tokens_per_minute) / max(1, rl.tokens_per_minute) > 0.2:
+                    logger.warning(
+                        "Judge [%s]: Actual TPM from Azure (%d) differs from config (%d) by >20%%",
+                        self._judge_cfg.name,
+                        actual_tpm,
+                        rl.tokens_per_minute,
+                    )
+            except (ValueError, TypeError):
+                pass
+
+        if actual_rpm_str:
+            try:
+                actual_rpm = int(actual_rpm_str)
+                if abs(actual_rpm - rl.requests_per_minute) / max(1, rl.requests_per_minute) > 0.2:
+                    logger.warning(
+                        "Judge [%s]: Actual RPM from Azure (%d) differs from config (%d) by >20%%",
+                        self._judge_cfg.name,
+                        actual_rpm,
+                        rl.requests_per_minute,
+                    )
+            except (ValueError, TypeError):
+                pass
 
     async def judge(
         self,
@@ -222,6 +274,7 @@ class JudgeAdapter:
                     model=self._judge_cfg.model,
                     temperature=0.0,
                     max_tokens=512,
+                    raw_response_hook=self._on_response,
                 ),
                 timeout=timeout_s,
             )
@@ -293,33 +346,68 @@ class JudgeBatchAdapter:
 
         *requests* is a list of ``(custom_id, prompt)`` tuples.
         *max_poll_time_s* is the maximum time to spend polling before raising TimeoutError.
+
+        Large request sets are automatically split into chunks that respect
+        Azure Batch API limits (request count and file size).
         """
-        input_path = run_dir / f"judge_batch_input_{self._judge_cfg.name}.jsonl"
-        input_path.parent.mkdir(parents=True, exist_ok=True)
+        from adele_runner.utils.batch_split import split_batch_requests
 
         batch_cfg = self._app_cfg.azure.batch
 
-        with input_path.open("w", encoding="utf-8") as fh:
-            for custom_id, prompt in requests:
-                row = {
-                    "custom_id": custom_id,
-                    "method": "POST",
-                    "url": batch_cfg.completion_endpoint,
-                    "body": {
-                        "model": self._judge_cfg.model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.0,
-                        "max_tokens": 512,
-                    },
-                }
-                fh.write(json.dumps(row) + "\n")
-        logger.info(
-            "Judge batch [%s]: wrote %d requests to %s",
-            self._judge_cfg.name,
-            len(requests),
-            input_path,
-        )
+        # Build JSONL lines
+        jsonl_lines: list[str] = []
+        for custom_id, prompt in requests:
+            row = {
+                "custom_id": custom_id,
+                "method": "POST",
+                "url": batch_cfg.completion_endpoint,
+                "body": {
+                    "model": self._judge_cfg.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.0,
+                    "max_tokens": 512,
+                },
+            }
+            jsonl_lines.append(json.dumps(row))
 
+        chunks = split_batch_requests(
+            jsonl_lines,
+            max_requests=batch_cfg.max_requests_per_file,
+            max_bytes=batch_cfg.max_bytes_per_file,
+        )
+        all_results: dict[str, dict[str, Any]] = {}
+
+        for chunk_idx, chunk in enumerate(chunks):
+            suffix = f"_{chunk_idx}" if len(chunks) > 1 else ""
+            input_path = run_dir / f"judge_batch_input_{self._judge_cfg.name}{suffix}.jsonl"
+            input_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with input_path.open("w", encoding="utf-8") as fh:
+                for line in chunk:
+                    fh.write(line + "\n")
+            logger.info(
+                "Judge batch [%s] chunk %d/%d: wrote %d requests to %s",
+                self._judge_cfg.name,
+                chunk_idx + 1,
+                len(chunks),
+                len(chunk),
+                input_path,
+            )
+
+            chunk_results = self._submit_and_poll(input_path, batch_cfg, max_poll_time_s, chunk_idx)
+            all_results.update(chunk_results)
+
+        logger.info("Judge batch [%s]: %d total results.", self._judge_cfg.name, len(all_results))
+        return all_results
+
+    def _submit_and_poll(
+        self,
+        input_path: Path,
+        batch_cfg: Any,
+        max_poll_time_s: float,
+        chunk_idx: int,
+    ) -> dict[str, dict[str, Any]]:
+        """Upload, create batch, poll, and download results for a single chunk."""
         # Upload
         with input_path.open("rb") as fh:
             file_obj = self._client.files.create(file=fh, purpose="batch")
@@ -377,7 +465,6 @@ class JudgeBatchAdapter:
                 "completion_tokens": usage.get("completion_tokens"),
             }
 
-        logger.info("Judge batch [%s]: %d results downloaded.", self._judge_cfg.name, len(results))
         return results
 
 

@@ -50,6 +50,8 @@ Connection settings for Azure services. Set once per environment.
 | `api_key_env` | `str` | `"AZURE_OPENAI_API_KEY"` | Env var for the batch API key |
 | `api_version` | `str` | `""` | Azure OpenAI API version string |
 | `completion_endpoint` | `str` | `"/chat/completions"` | Completion endpoint path used in batch requests |
+| `max_requests_per_file` | `int` | `50000` | Maximum requests per batch file. Azure hard limit: 100,000 |
+| `max_bytes_per_file` | `int` | `100000000` | Maximum bytes per batch file (100 MB default). Azure hard limit: 200 MB |
 
 ### `run`
 
@@ -76,6 +78,16 @@ Connection settings for Azure services. Set once per environment.
 | `temperature` | `float` | `0.0` | Sampling temperature |
 | `max_tokens` | `int` | `2048` | Maximum completion tokens |
 | `top_p` | `float` | `1.0` | Top-p (nucleus) sampling |
+| `rate_limits` | `object \| null` | `null` | Optional rate limits for auto-tuning concurrency in foundry mode (see [Auto-tuning concurrency](#auto-tuning-concurrency)) |
+
+##### `inference.rate_limits`
+
+When set and inference mode is `foundry`, concurrency parameters (`max_in_flight`, `request_timeout_s`, `backoff_base_s`, `backoff_max_s`) are automatically computed from the deployment's rate limits.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `tokens_per_minute` | `int` | *(required)* | TPM limit from the Azure portal for this deployment |
+| `requests_per_minute` | `int` | *(required)* | RPM limit from the Azure portal for this deployment |
 
 ### `concurrency`
 
@@ -104,6 +116,7 @@ Each judge entry:
 | `name` | `str` | *(required)* | Display name for this judge |
 | `provider` | `"foundry" \| "batch"` | `"foundry"` | Whether to use Foundry async or Azure OpenAI Batch API |
 | `model` | `str` | *(required)* | Model name or deployment to use for judging |
+| `rate_limits` | `object \| null` | `null` | Optional per-judge rate limits (foundry judges only). Same structure as `inference.rate_limits` |
 
 ### `logging`
 
@@ -174,6 +187,79 @@ The runner validates config before making API calls. Validation checks:
 
 Use `--dry-run` to test config without hitting APIs. Dry-run skips API key validation.
 
+## Auto-tuning Concurrency
+
+When `inference.rate_limits` is configured and the inference mode is `foundry`, the runner automatically computes optimal concurrency parameters from TPM, RPM, and `inference.max_tokens`. This replaces the need to manually tune `concurrency.*` fields and helps avoid 429 (rate limit) errors.
+
+Rate-limit auto-tuning only applies to the **foundry provider**. Batch mode uses a different strategy: requests are automatically split into chunks that respect configurable limits (`azure.batch.max_requests_per_file` and `azure.batch.max_bytes_per_file`). These default to 50K requests / 100 MB per file, well within Azure's hard limits of 100K requests / 200 MB.
+
+### Inference auto-tuning
+
+When `inference.rate_limits` is set and `inference.mode` resolves to `foundry`:
+
+1. **Effective RPM** = min(RPM, TPM / max_tokens) — the tighter constraint
+2. **max_in_flight** = effective_rpm x estimated_duration / 60, with 80% safety margin
+3. **request_timeout_s** = max_tokens / 50 + 10s overhead, capped 30-600s
+4. **backoff_base_s** = 60 / effective_rpm, capped 0.5-10s
+5. **backoff_max_s** = backoff_base x 10, capped 30-120s
+
+### Judge auto-tuning
+
+When foundry judges have `rate_limits` configured, the runner uses the **most restrictive** judge's rate limits to tune concurrency before the judging phase. Judge requests use a fixed `max_tokens=512`.
+
+Since inference and judging run sequentially, concurrency parameters are recomputed between phases.
+
+Non-rate-limit params (`max_retries`, `max_poll_time_s`, `batch_completion_window`) are preserved from the user config.
+
+### Example computed values
+
+| TPM | RPM | max_tokens | max_in_flight | timeout_s | backoff |
+|-----|-----|------------|---------------|-----------|---------|
+| 80k | 300 | 2048 | 17 | 51s | 1.5–15s |
+| 80k | 300 | 50000 | 2 | 600s | 0.5–30s |
+| 200k | 600 | 2048 | 42 | 51s | 0.6–30s |
+| 30k | 100 | 512 | 7 | 30s | 4.1–41s |
+
+### Runtime header validation
+
+On the first API response, the runner reads `x-ratelimit-limit-tokens` and `x-ratelimit-limit-requests` headers from Azure. If either value differs from the config by more than 20%, a warning is logged so you can update your config.
+
+### Retry-After awareness
+
+When a 429 response includes a `Retry-After` or `x-ratelimit-reset-tokens` header, the retry system uses that value instead of generic exponential backoff — avoiding both unnecessary waits and premature retries.
+
 ## Annotated Example
 
 See [config.example.yaml](../config.example.yaml) for a fully annotated config file, or the [examples/](../examples/) directory for scenario-specific configs.
+
+## CLI Flags
+
+All CLI flags override the corresponding config-file values.
+
+| Flag | Type | Commands | Description |
+|---|---|---|---|
+| `--config` / `-c` | `Path` | All | Path to YAML config file |
+| `--model` / `-m` | `str` | `run-inference`, `run-all` | Model name or deployment |
+| `--mode` | `str` | `run-inference`, `run-all` | Inference mode: `foundry`, `batch`, or `auto` |
+| `--tpm` | `int` | `run-inference`, `run-all` | Tokens per minute rate limit (foundry only, requires `--rpm`) |
+| `--rpm` | `int` | `run-inference`, `run-all` | Requests per minute rate limit (foundry only, requires `--tpm`) |
+| `--judge` / `-j` | `str` | `run-judge`, `run-all` | Judge model (repeatable). See format below |
+| `--judge-template` | `str` | `run-judge`, `run-all` | Judge prompt template: `v1` or `v2` |
+| `--dry-run` | `bool` | `run-inference`, `run-judge`, `run-all` | Print plan and exit without API calls |
+
+### `--judge` format
+
+```
+MODEL                       → foundry provider, no rate limits
+MODEL:PROVIDER              → explicit provider (foundry or batch)
+MODEL:PROVIDER:TPM:RPM      → explicit provider + rate limits (foundry only)
+```
+
+Examples:
+```bash
+--judge gpt-4o                          # foundry, no rate limits
+--judge gpt-4o:batch                    # batch provider
+--judge gpt-4o:foundry:80000:300        # foundry with TPM=80000 RPM=300
+```
+
+Rate limits for batch judges are not supported (batch uses file splitting instead). Providing TPM/RPM for a batch judge is an error.
