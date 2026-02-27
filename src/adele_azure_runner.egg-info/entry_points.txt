@@ -1,0 +1,2 @@
+[console_scripts]
+adele-runner = adele_runner.cli:app

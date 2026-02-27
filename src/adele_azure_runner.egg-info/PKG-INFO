@@ -1,0 +1,57 @@
+Metadata-Version: 2.4
+Name: adele-azure-runner
+Version: 0.1.0
+Summary: ADeLe benchmark runner and multi-judge framework for Azure AI Foundry
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: azure-ai-inference>=1.0.0b9
+Requires-Dist: azure-identity>=1.17.1
+Requires-Dist: datasets>=2.20.0
+Requires-Dist: pyarrow>=17.0.0
+Requires-Dist: pydantic>=2.8.2
+Requires-Dist: pydantic-settings>=2.4.0
+Requires-Dist: pyyaml>=6.0.2
+Requires-Dist: tenacity>=8.5.0
+Requires-Dist: typer>=0.12.4
+Requires-Dist: rich>=13.7.1
+Requires-Dist: orjson>=3.10.7
+Requires-Dist: scikit-learn>=1.5.1
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.2; extra == "dev"
+Requires-Dist: pytest-mock>=3.14.0; extra == "dev"
+Requires-Dist: ruff>=0.6.2; extra == "dev"
+Requires-Dist: mypy>=1.11.1; extra == "dev"
+
+# ADeLe Azure Runner
+
+Production-oriented benchmark runner for the ADeLe dataset using Azure AI Foundry inference and multi-judge evaluation.
+
+## Architecture (short)
+- **Dataset layer**: pluggable loaders (`datasets/`) normalize records to `{instance_id, prompt, ground_truth}`.
+- **Adapter layer**: model/provider specific clients (`adapters/`) with a common chat interface.
+- **Pipeline layer**: streaming inference, judging, merge, and summary stages (`pipeline/`).
+- **Storage layer**: append-only JSONL artifacts + merged parquet in `runs/<run_id>/`.
+
+## Artifacts
+- `outputs.jsonl`: model outputs (dedup key: `instance_id + model_id`)
+- `judge_outputs.jsonl`: one row per `{instance_id, model_id, judge_name}`
+- `merged_results.parquet`: merged inference + judge records
+- `run_manifest.json`: immutable run metadata
+
+## Quickstart
+```bash
+uv venv
+uv sync --extra dev
+cp config.example.yaml config.yaml
+uv run adele-runner run-inference --config config.yaml
+uv run adele-runner run-judge --config config.yaml
+uv run adele-runner merge-results --config config.yaml
+uv run adele-runner summarize --config config.yaml
+```
+
+## Config
+Use YAML + environment variables for secrets and endpoint auth. See `config.example.yaml`.
+
+## Notes
+- Idempotent reruns: completed records are skipped.
+- Streaming JSONL IO is used to avoid high memory usage.
