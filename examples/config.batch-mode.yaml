@@ -6,6 +6,15 @@
 #   export AZURE_OPENAI_API_KEY="<your-aoai-key>"
 #   uv run adele-runner run-all --model gpt-4o
 
+azure:
+  foundry:
+    endpoint: "https://<YOUR-RESOURCE>.services.ai.azure.com/models"
+    api_key_env: "AZURE_AI_API_KEY"
+  batch:
+    endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
+    api_key_env: "AZURE_OPENAI_API_KEY"
+    api_version: "<API_VERSION>"
+
 run:
   run_id: "batch_mode_run"
   output_dir: "runs"
@@ -16,24 +25,15 @@ dataset:
   limit: 50
 
 inference:
-  mode: "auto"                    # resolves to batch since batch.enabled is true
-  foundry:
-    endpoint: "https://<YOUR-RESOURCE>.services.ai.azure.com/models"
-    api_key_env: "AZURE_AI_API_KEY"
-    model: ""
-    temperature: 0.0
-    max_tokens: 2048
-  batch:
-    enabled: true
-    azure_openai_endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
-    api_key_env: "AZURE_OPENAI_API_KEY"
-    deployment: "<DEPLOYMENT_NAME>"
-    api_version: "<API_VERSION>"
-    completion_window: "24h"
+  mode: "batch"
+  model: "<DEPLOYMENT_NAME>"
+  temperature: 0.0
+  max_tokens: 2048
 
 concurrency:
   max_in_flight: 16
   max_poll_time_s: 3600           # 1 hour timeout for batch polling
+  batch_completion_window: "24h"
 
 judging:
   enabled: true

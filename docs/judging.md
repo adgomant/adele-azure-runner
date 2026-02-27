@@ -6,8 +6,8 @@ The judge stage evaluates model outputs by sending them (along with the original
 
 | Provider | Transport | Config |
 |---|---|---|
-| `foundry` | Azure AI Foundry async (same as inference) | Uses `inference.foundry.endpoint` and `AZURE_AI_API_KEY` |
-| `batch` | Azure OpenAI Batch API | Uses `inference.batch.azure_openai_endpoint` and `AZURE_OPENAI_API_KEY` |
+| `foundry` | Azure AI Foundry async (same as inference) | Uses `azure.foundry.endpoint` and `AZURE_AI_API_KEY` |
+| `batch` | Azure OpenAI Batch API | Uses `azure.batch.endpoint` and `AZURE_OPENAI_API_KEY` |
 
 Configure judges in `config.yaml`:
 

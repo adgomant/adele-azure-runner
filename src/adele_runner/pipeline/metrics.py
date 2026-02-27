@@ -82,7 +82,9 @@ def summarize(config: AppConfig) -> dict[str, Any]:
     verification: dict[str, Any] = {
         "n_instances": len(avg_scores),
         "mean_avg_score": round(sum(avg_scores.values()) / len(avg_scores), 3) if avg_scores else 0,
-        "verification_pass_rate": round(sum(verification_binary) / len(verification_binary), 3) if verification_binary else 0,
+        "verification_pass_rate": round(sum(verification_binary) / len(verification_binary), 3)
+        if verification_binary
+        else 0,
         "verification_score_dist": dict(sorted(Counter(verification_binary).items())),
     }
 
@@ -110,7 +112,9 @@ def summarize(config: AppConfig) -> dict[str, Any]:
     token_usage: dict[str, dict[str, int]] = {}
     inference_records = list(iter_jsonl(config.outputs_path(), InferenceOutput))
     for rec in inference_records:
-        entry = token_usage.setdefault(rec.model_id, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        entry = token_usage.setdefault(
+            rec.model_id, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        )
         entry["prompt_tokens"] += rec.tokens_prompt or 0
         entry["completion_tokens"] += rec.tokens_completion or 0
         entry["total_tokens"] += (rec.tokens_prompt or 0) + (rec.tokens_completion or 0)

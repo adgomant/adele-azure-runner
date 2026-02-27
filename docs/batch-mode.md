@@ -19,16 +19,15 @@ Use Foundry async mode when:
 ## Config Requirements
 
 ```yaml
-inference:
-  mode: "batch"                # or "auto" with batch.enabled: true
+azure:
   batch:
-    enabled: true
-    azure_openai_endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
+    endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
     api_key_env: "AZURE_OPENAI_API_KEY"
-    deployment: "<DEPLOYMENT_NAME>"
     api_version: "<API_VERSION>"
-    completion_endpoint: "/chat/completions"
-    completion_window: "24h"
+
+inference:
+  mode: "batch"
+  model: "<DEPLOYMENT_NAME>"
 ```
 
 Set the API key:
@@ -88,7 +87,7 @@ concurrency:
   max_poll_time_s: 3600    # 1 hour (default)
 ```
 
-If the batch job does not complete within this window, the runner raises `TimeoutError`. Increase `max_poll_time_s` for large batch jobs or set a generous `completion_window` in the batch config.
+If the batch job does not complete within this window, the runner raises `TimeoutError`. Increase `max_poll_time_s` for large batch jobs or set a generous `batch_completion_window` in the concurrency config.
 
 ## Inference Parameters
 
@@ -96,9 +95,9 @@ Batch requests use the same inference parameters as Foundry mode:
 
 | Parameter | Config field | Default |
 |---|---|---|
-| `temperature` | `inference.foundry.temperature` | `0.0` |
-| `max_tokens` | `inference.foundry.max_tokens` | `2048` |
-| `top_p` | `inference.foundry.top_p` | `1.0` |
+| `temperature` | `inference.temperature` | `0.0` |
+| `max_tokens` | `inference.max_tokens` | `2048` |
+| `top_p` | `inference.top_p` | `1.0` |
 
 ## Mixing Batch and Foundry Judges
 

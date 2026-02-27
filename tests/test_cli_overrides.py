@@ -17,23 +17,22 @@ def _base_config(**overrides) -> AppConfig:
 def test_no_overrides_leaves_config_unchanged():
     cfg = _base_config()
     original_mode = cfg.inference.mode
-    original_model = cfg.inference.foundry.model
+    original_model = cfg.inference.model
     apply_cli_overrides(cfg)
     assert cfg.inference.mode == original_mode
-    assert cfg.inference.foundry.model == original_model
+    assert cfg.inference.model == original_model
 
 
-def test_mode_batch_sets_internal_mode_and_enabled():
+def test_mode_batch_sets_internal_mode():
     cfg = _base_config()
     apply_cli_overrides(cfg, mode="batch")
-    assert cfg.inference.mode == "azure_openai_batch"
-    assert cfg.inference.batch.enabled is True
+    assert cfg.inference.mode == "batch"
 
 
 def test_mode_foundry_sets_internal_mode():
     cfg = _base_config()
     apply_cli_overrides(cfg, mode="foundry")
-    assert cfg.inference.mode == "foundry_async"
+    assert cfg.inference.mode == "foundry"
 
 
 def test_mode_auto_sets_internal_mode():
@@ -51,33 +50,33 @@ def test_invalid_mode_raises():
 def test_model_with_foundry_mode():
     cfg = _base_config()
     apply_cli_overrides(cfg, mode="foundry", models=["my-foundry-model"])
-    assert cfg.inference.foundry.model == "my-foundry-model"
+    assert cfg.inference.model == "my-foundry-model"
 
 
 def test_model_with_batch_mode():
     cfg = _base_config()
     apply_cli_overrides(cfg, mode="batch", models=["my-batch-deployment"])
-    assert cfg.inference.batch.deployment == "my-batch-deployment"
+    assert cfg.inference.model == "my-batch-deployment"
 
 
 def test_model_without_mode_uses_resolved_default():
     cfg = _base_config()
-    # Default mode is "auto" with batch.enabled=False → resolves to foundry_async
+    # Default mode is "auto" → resolves to foundry
     apply_cli_overrides(cfg, models=["some-model"])
-    assert cfg.inference.foundry.model == "some-model"
+    assert cfg.inference.model == "some-model"
 
 
-def test_model_without_mode_batch_enabled():
-    cfg = _base_config(inference={"mode": "auto", "batch": {"enabled": True}})
+def test_model_with_batch_mode_set_in_config():
+    cfg = _base_config(inference={"mode": "batch"})
     apply_cli_overrides(cfg, models=["some-deployment"])
-    assert cfg.inference.batch.deployment == "some-deployment"
+    assert cfg.inference.model == "some-deployment"
 
 
 def test_multi_model_sets_first():
     """When multiple models given, apply_cli_overrides sets the first one."""
     cfg = _base_config()
     apply_cli_overrides(cfg, models=["model-a", "model-b", "model-c"])
-    assert cfg.inference.foundry.model == "model-a"
+    assert cfg.inference.model == "model-a"
 
 
 # ---------------------------------------------------------------------------

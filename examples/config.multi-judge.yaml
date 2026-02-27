@@ -6,6 +6,15 @@
 #   export AZURE_OPENAI_API_KEY="<your-aoai-key>"
 #   uv run adele-runner run-all --model gpt-4o
 
+azure:
+  foundry:
+    endpoint: "https://<YOUR-RESOURCE>.services.ai.azure.com/models"
+    api_key_env: "AZURE_AI_API_KEY"
+  batch:
+    endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
+    api_key_env: "AZURE_OPENAI_API_KEY"
+    api_version: "<API_VERSION>"
+
 run:
   run_id: "multi_judge_run"
   output_dir: "runs"
@@ -17,18 +26,9 @@ dataset:
 
 inference:
   mode: "auto"
-  foundry:
-    endpoint: "https://<YOUR-RESOURCE>.services.ai.azure.com/models"
-    api_key_env: "AZURE_AI_API_KEY"
-    model: ""
-    temperature: 0.0
-    max_tokens: 2048
-  batch:
-    enabled: true
-    azure_openai_endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
-    api_key_env: "AZURE_OPENAI_API_KEY"
-    deployment: "<DEPLOYMENT_NAME>"
-    api_version: "<API_VERSION>"
+  model: ""
+  temperature: 0.0
+  max_tokens: 2048
 
 concurrency:
   max_in_flight: 16

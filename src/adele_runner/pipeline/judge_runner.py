@@ -159,7 +159,7 @@ def parse_judge_v2(raw: str) -> dict[str, Any]:
         pass
 
     # 2) Fallback: regex for first integer 1-5
-    match = re.search(r'\b([1-5])\b', raw)
+    match = re.search(r"\b([1-5])\b", raw)
     if match:
         score = int(match.group(1))
         return {
@@ -198,9 +198,8 @@ class JudgeAdapter:
             raise ImportError("azure-ai-inference is required.") from exc
 
         api_key = self._app_cfg.get_foundry_api_key()
-        foundry_cfg = self._app_cfg.inference.foundry
         return ChatCompletionsClient(
-            endpoint=foundry_cfg.endpoint,
+            endpoint=self._app_cfg.azure.foundry.endpoint,
             credential=AzureKeyCredential(api_key),
         )
 
@@ -264,7 +263,6 @@ class JudgeBatchAdapter:
     def __init__(self, judge_cfg: JudgeConfig, app_cfg: AppConfig) -> None:
         self._judge_cfg = judge_cfg
         self._app_cfg = app_cfg
-        self._batch_cfg = app_cfg.inference.batch
         self._client = self._build_client()
 
     def _build_client(self) -> Any:
@@ -277,9 +275,9 @@ class JudgeBatchAdapter:
 
         api_key = self._app_cfg.get_batch_api_key()
         return AzureOpenAI(
-            azure_endpoint=self._batch_cfg.azure_openai_endpoint,
+            azure_endpoint=self._app_cfg.azure.batch.endpoint,
             api_key=api_key,
-            api_version=self._batch_cfg.api_version,
+            api_version=self._app_cfg.azure.batch.api_version,
         )
 
     def run_batch(
@@ -296,12 +294,14 @@ class JudgeBatchAdapter:
         input_path = run_dir / f"judge_batch_input_{self._judge_cfg.name}.jsonl"
         input_path.parent.mkdir(parents=True, exist_ok=True)
 
+        batch_cfg = self._app_cfg.azure.batch
+
         with input_path.open("w", encoding="utf-8") as fh:
             for custom_id, prompt in requests:
                 row = {
                     "custom_id": custom_id,
                     "method": "POST",
-                    "url": self._batch_cfg.completion_endpoint,
+                    "url": batch_cfg.completion_endpoint,
                     "body": {
                         "model": self._judge_cfg.model,
                         "messages": [{"role": "user", "content": prompt}],
@@ -312,7 +312,9 @@ class JudgeBatchAdapter:
                 fh.write(json.dumps(row) + "\n")
         logger.info(
             "Judge batch [%s]: wrote %d requests to %s",
-            self._judge_cfg.name, len(requests), input_path,
+            self._judge_cfg.name,
+            len(requests),
+            input_path,
         )
 
         # Upload
@@ -323,12 +325,14 @@ class JudgeBatchAdapter:
         # Create batch
         batch = self._client.batches.create(
             input_file_id=file_obj.id,
-            endpoint=self._batch_cfg.completion_endpoint,
-            completion_window=self._batch_cfg.completion_window,
+            endpoint=batch_cfg.completion_endpoint,
+            completion_window=self._app_cfg.concurrency.batch_completion_window,
         )
         logger.info(
             "Judge batch [%s]: created %s (status=%s)",
-            self._judge_cfg.name, batch.id, batch.status,
+            self._judge_cfg.name,
+            batch.id,
+            batch.status,
         )
 
         # Poll with timeout
@@ -343,7 +347,9 @@ class JudgeBatchAdapter:
                 )
             time.sleep(_BATCH_POLL_INTERVAL_S)
             batch = self._client.batches.retrieve(batch.id)
-            logger.info("Judge batch [%s] %s status: %s", self._judge_cfg.name, batch.id, batch.status)
+            logger.info(
+                "Judge batch [%s] %s status: %s", self._judge_cfg.name, batch.id, batch.status
+            )
 
         if batch.status != "completed":
             raise RuntimeError(
@@ -542,7 +548,12 @@ async def run_judge(
 
     foundry_coro = (
         _run_foundry_judges(
-            config, foundry_judges, inference_outputs, ground_truths, done, judge_path,
+            config,
+            foundry_judges,
+            inference_outputs,
+            ground_truths,
+            done,
+            judge_path,
         )
         if foundry_judges
         else _noop()
@@ -550,7 +561,13 @@ async def run_judge(
     batch_coro = (
         asyncio.to_thread(
             _run_batch_judges,
-            config, batch_judges, inference_outputs, ground_truths, done, run_dir, judge_path,
+            config,
+            batch_judges,
+            inference_outputs,
+            ground_truths,
+            done,
+            run_dir,
+            judge_path,
         )
         if batch_judges
         else _noop()

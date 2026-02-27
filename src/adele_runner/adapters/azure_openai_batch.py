@@ -21,7 +21,6 @@ class AzureOpenAIBatchAdapter:
 
     def __init__(self, config: AppConfig) -> None:
         self._cfg = config
-        self._batch_cfg = config.inference.batch
         self._client = self._build_client()
 
     def _build_client(self) -> Any:
@@ -34,26 +33,28 @@ class AzureOpenAIBatchAdapter:
 
         api_key = self._cfg.get_batch_api_key()
         return AzureOpenAI(
-            azure_endpoint=self._batch_cfg.azure_openai_endpoint,
+            azure_endpoint=self._cfg.azure.batch.endpoint,
             api_key=api_key,
-            api_version=self._batch_cfg.api_version,
+            api_version=self._cfg.azure.batch.api_version,
         )
 
     def _build_batch_jsonl(self, items: list[DatasetItem], tmp_path: Path) -> Path:
         """Serialise items into Azure OpenAI batch JSONL format."""
         tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        inf = self._cfg.inference
+        batch_cfg = self._cfg.azure.batch
         with tmp_path.open("w", encoding="utf-8") as fh:
             for item in items:
                 request = {
                     "custom_id": item.instance_id,
                     "method": "POST",
-                    "url": self._batch_cfg.completion_endpoint,
+                    "url": batch_cfg.completion_endpoint,
                     "body": {
-                        "model": self._batch_cfg.deployment,
+                        "model": inf.model,
                         "messages": [{"role": "user", "content": item.prompt}],
-                        "temperature": self._cfg.inference.foundry.temperature,
-                        "max_tokens": self._cfg.inference.foundry.max_tokens,
-                        "top_p": self._cfg.inference.foundry.top_p,
+                        "temperature": inf.temperature,
+                        "max_tokens": inf.max_tokens,
+                        "top_p": inf.top_p,
                     },
                 }
                 fh.write(json.dumps(request) + "\n")
@@ -69,6 +70,8 @@ class AzureOpenAIBatchAdapter:
         batch_input_path = run_dir / "batch_input.jsonl"
         self._build_batch_jsonl(items, batch_input_path)
 
+        batch_cfg = self._cfg.azure.batch
+
         # Upload file
         with batch_input_path.open("rb") as fh:
             file_obj = self._client.files.create(file=fh, purpose="batch")
@@ -77,8 +80,8 @@ class AzureOpenAIBatchAdapter:
         # Create batch
         batch = self._client.batches.create(
             input_file_id=file_obj.id,
-            endpoint=self._batch_cfg.completion_endpoint,
-            completion_window=self._batch_cfg.completion_window,
+            endpoint=batch_cfg.completion_endpoint,
+            completion_window=self._cfg.concurrency.batch_completion_window,
         )
         logger.info("Batch created: %s (status=%s)", batch.id, batch.status)
 
@@ -116,7 +119,7 @@ class AzureOpenAIBatchAdapter:
             outputs.append(
                 InferenceOutput(
                     instance_id=custom_id,
-                    model_id=self._batch_cfg.deployment,
+                    model_id=self._cfg.inference.model,
                     prompt=original_item.prompt if original_item else "",
                     response=content,
                     tokens_prompt=usage.get("prompt_tokens"),

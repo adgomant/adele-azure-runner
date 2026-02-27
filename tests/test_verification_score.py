@@ -72,22 +72,19 @@ def test_no_records():
 @pytest.mark.parametrize(
     "judge_scores, expected_verification",
     [
-        ([4], 1),       # avg=4 >= 3 → pass
-        ([3], 1),       # avg=3 >= 3 → pass
-        ([4, 2], 1),    # avg=3.0 → pass
-        ([4, 3], 1),    # avg=3.5 → pass
-        ([5, 5], 1),    # avg=5 → pass
-        ([1, 1], 0),    # avg=1 → fail
-        ([5, 1], 1),    # avg=3 → pass
-        ([4, 4, 1], 1), # avg=3.0 → pass
+        ([4], 1),  # avg=4 >= 3 → pass
+        ([3], 1),  # avg=3 >= 3 → pass
+        ([4, 2], 1),  # avg=3.0 → pass
+        ([4, 3], 1),  # avg=3.5 → pass
+        ([5, 5], 1),  # avg=5 → pass
+        ([1, 1], 0),  # avg=1 → fail
+        ([5, 1], 1),  # avg=3 → pass
+        ([4, 4, 1], 1),  # avg=3.0 → pass
     ],
 )
 def test_verification_binary(judge_scores: list[int], expected_verification: int):
     """End-to-end: judge scores → avg → binary verification."""
-    records = [
-        _judge("i1", "m1", f"j{i}", s)
-        for i, s in enumerate(judge_scores)
-    ]
+    records = [_judge("i1", "m1", f"j{i}", s) for i, s in enumerate(judge_scores)]
     avg_scores = compute_verification_scores(records)
     avg = avg_scores[("i1", "m1")]
 

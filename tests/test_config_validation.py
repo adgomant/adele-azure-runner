@@ -15,19 +15,28 @@ def _cfg(**overrides) -> AppConfig:
 
 
 def test_empty_foundry_endpoint():
-    cfg = _cfg(inference={"foundry": {"endpoint": "", "model": "gpt-4o"}})
+    cfg = _cfg(
+        azure={"foundry": {"endpoint": ""}},
+        inference={"model": "gpt-4o"},
+    )
     errors = cfg.validate_config()
     assert any("endpoint" in e.lower() for e in errors)
 
 
 def test_placeholder_foundry_endpoint():
-    cfg = _cfg(inference={"foundry": {"endpoint": "https://<YOUR-RESOURCE>.services.ai.azure.com", "model": "m"}})
+    cfg = _cfg(
+        azure={"foundry": {"endpoint": "https://<YOUR-RESOURCE>.services.ai.azure.com"}},
+        inference={"model": "m"},
+    )
     errors = cfg.validate_config()
     assert any("endpoint" in e.lower() for e in errors)
 
 
 def test_valid_foundry_endpoint_no_error():
-    cfg = _cfg(inference={"foundry": {"endpoint": "https://myresource.services.ai.azure.com", "model": "m"}})
+    cfg = _cfg(
+        azure={"foundry": {"endpoint": "https://myresource.services.ai.azure.com"}},
+        inference={"model": "m"},
+    )
     errors = cfg.validate_config()
     endpoint_errors = [e for e in errors if "endpoint" in e.lower()]
     assert len(endpoint_errors) == 0
@@ -38,8 +47,11 @@ def test_valid_foundry_endpoint_no_error():
 # ---------------------------------------------------------------------------
 
 
-def test_missing_foundry_model():
-    cfg = _cfg(inference={"foundry": {"endpoint": "https://real.endpoint.com", "model": ""}})
+def test_missing_model():
+    cfg = _cfg(
+        azure={"foundry": {"endpoint": "https://real.endpoint.com"}},
+        inference={"model": ""},
+    )
     errors = cfg.validate_config()
     assert any("model" in e.lower() for e in errors)
 
@@ -50,34 +62,30 @@ def test_missing_foundry_model():
 
 
 def test_empty_batch_endpoint():
-    cfg = _cfg(inference={"mode": "azure_openai_batch", "batch": {"enabled": True, "azure_openai_endpoint": ""}})
+    cfg = _cfg(
+        azure={"batch": {"endpoint": ""}},
+        inference={"mode": "batch"},
+    )
     errors = cfg.validate_config()
     assert any("batch" in e.lower() and "endpoint" in e.lower() for e in errors)
 
 
 def test_placeholder_batch_endpoint():
-    cfg = _cfg(inference={
-        "mode": "azure_openai_batch",
-        "batch": {
-            "enabled": True,
-            "azure_openai_endpoint": "https://<YOUR-AOAI-RESOURCE>.openai.azure.com",
-        },
-    })
+    cfg = _cfg(
+        azure={"batch": {"endpoint": "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"}},
+        inference={"mode": "batch"},
+    )
     errors = cfg.validate_config()
     assert any("batch" in e.lower() and "endpoint" in e.lower() for e in errors)
 
 
-def test_missing_batch_deployment():
-    cfg = _cfg(inference={
-        "mode": "azure_openai_batch",
-        "batch": {
-            "enabled": True,
-            "azure_openai_endpoint": "https://real.openai.azure.com",
-            "deployment": "",
-        },
-    })
+def test_missing_batch_model():
+    cfg = _cfg(
+        azure={"batch": {"endpoint": "https://real.openai.azure.com"}},
+        inference={"mode": "batch", "model": ""},
+    )
     errors = cfg.validate_config()
-    assert any("deployment" in e.lower() for e in errors)
+    assert any("model" in e.lower() for e in errors)
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +95,8 @@ def test_missing_batch_deployment():
 
 def test_judging_enabled_no_judges():
     cfg = _cfg(
-        inference={"foundry": {"endpoint": "https://real.com", "model": "m"}},
+        azure={"foundry": {"endpoint": "https://real.com"}},
+        inference={"model": "m"},
         judging={"enabled": True, "judges": []},
     )
     errors = cfg.validate_config()
@@ -96,7 +105,8 @@ def test_judging_enabled_no_judges():
 
 def test_judging_disabled_no_judges_ok():
     cfg = _cfg(
-        inference={"foundry": {"endpoint": "https://real.com", "model": "m"}},
+        azure={"foundry": {"endpoint": "https://real.com"}},
+        inference={"model": "m"},
         judging={"enabled": False, "judges": []},
     )
     errors = cfg.validate_config()
@@ -111,7 +121,8 @@ def test_judging_disabled_no_judges_ok():
 
 def test_invalid_prompt_template():
     cfg = _cfg(
-        inference={"foundry": {"endpoint": "https://real.com", "model": "m"}},
+        azure={"foundry": {"endpoint": "https://real.com"}},
+        inference={"model": "m"},
         judging={"prompt_template": "v99"},
     )
     errors = cfg.validate_config()
@@ -121,12 +132,15 @@ def test_invalid_prompt_template():
 def test_valid_prompt_templates():
     for template in ("v1", "v2"):
         cfg = _cfg(
-            inference={"foundry": {"endpoint": "https://real.com", "model": "m"}},
+            azure={"foundry": {"endpoint": "https://real.com"}},
+            inference={"model": "m"},
             judging={"prompt_template": template, "enabled": False},
         )
         errors = cfg.validate_config()
         template_errors = [e for e in errors if "template" in e.lower()]
-        assert len(template_errors) == 0, f"Unexpected error for template={template}: {template_errors}"
+        assert len(template_errors) == 0, (
+            f"Unexpected error for template={template}: {template_errors}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +150,8 @@ def test_valid_prompt_templates():
 
 def test_fully_valid_config():
     cfg = _cfg(
-        inference={"foundry": {"endpoint": "https://myresource.azure.com", "model": "gpt-4o"}},
+        azure={"foundry": {"endpoint": "https://myresource.azure.com"}},
+        inference={"model": "gpt-4o"},
         judging={"enabled": True, "judges": [{"name": "j", "model": "m"}]},
     )
     errors = cfg.validate_config()

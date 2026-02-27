@@ -17,7 +17,9 @@ def _write_jsonl(path: Path, records: list) -> None:
             fh.write(rec.model_dump_json() + "\n")
 
 
-def _inference(instance_id: str, model_id: str, prompt_tokens: int, completion_tokens: int) -> InferenceOutput:
+def _inference(
+    instance_id: str, model_id: str, prompt_tokens: int, completion_tokens: int
+) -> InferenceOutput:
     return InferenceOutput(
         instance_id=instance_id,
         model_id=model_id,
@@ -41,7 +43,9 @@ def _judge(instance_id: str, model_id: str, judge_name: str, score: int) -> Judg
     )
 
 
-def _make_config(tmp_path: Path, *, pricing_enabled: bool = False, models: dict | None = None) -> AppConfig:
+def _make_config(
+    tmp_path: Path, *, pricing_enabled: bool = False, models: dict | None = None
+) -> AppConfig:
     overrides = {
         "run": {"run_id": "test", "output_dir": str(tmp_path)},
         "judging": {"enabled": False},
@@ -67,14 +71,20 @@ def test_token_aggregation(tmp_path):
     run_dir = tmp_path / "test"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_jsonl(run_dir / "outputs.jsonl", [
-        _inference("i1", "gpt-4o", 100, 50),
-        _inference("i2", "gpt-4o", 200, 100),
-    ])
-    _write_jsonl(run_dir / "judge_outputs.jsonl", [
-        _judge("i1", "gpt-4o", "j1", 4),
-        _judge("i2", "gpt-4o", "j1", 3),
-    ])
+    _write_jsonl(
+        run_dir / "outputs.jsonl",
+        [
+            _inference("i1", "gpt-4o", 100, 50),
+            _inference("i2", "gpt-4o", 200, 100),
+        ],
+    )
+    _write_jsonl(
+        run_dir / "judge_outputs.jsonl",
+        [
+            _judge("i1", "gpt-4o", "j1", 4),
+            _judge("i2", "gpt-4o", "j1", 3),
+        ],
+    )
 
     summary = summarize(cfg)
     assert "token_usage" in summary
@@ -100,12 +110,18 @@ def test_pricing_calculation(tmp_path):
     run_dir = tmp_path / "test"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_jsonl(run_dir / "outputs.jsonl", [
-        _inference("i1", "gpt-4o", 1000, 500),
-    ])
-    _write_jsonl(run_dir / "judge_outputs.jsonl", [
-        _judge("i1", "gpt-4o", "j1", 5),
-    ])
+    _write_jsonl(
+        run_dir / "outputs.jsonl",
+        [
+            _inference("i1", "gpt-4o", 1000, 500),
+        ],
+    )
+    _write_jsonl(
+        run_dir / "judge_outputs.jsonl",
+        [
+            _judge("i1", "gpt-4o", "j1", 5),
+        ],
+    )
 
     summary = summarize(cfg)
     assert "estimated_cost" in summary
@@ -120,12 +136,18 @@ def test_pricing_disabled(tmp_path):
     run_dir = tmp_path / "test"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_jsonl(run_dir / "outputs.jsonl", [
-        _inference("i1", "gpt-4o", 100, 50),
-    ])
-    _write_jsonl(run_dir / "judge_outputs.jsonl", [
-        _judge("i1", "gpt-4o", "j1", 4),
-    ])
+    _write_jsonl(
+        run_dir / "outputs.jsonl",
+        [
+            _inference("i1", "gpt-4o", 100, 50),
+        ],
+    )
+    _write_jsonl(
+        run_dir / "judge_outputs.jsonl",
+        [
+            _judge("i1", "gpt-4o", "j1", 4),
+        ],
+    )
 
     summary = summarize(cfg)
     assert "estimated_cost" not in summary
@@ -142,12 +164,18 @@ def test_no_pricing_for_unknown_model(tmp_path):
     run_dir = tmp_path / "test"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_jsonl(run_dir / "outputs.jsonl", [
-        _inference("i1", "gpt-4o", 100, 50),
-    ])
-    _write_jsonl(run_dir / "judge_outputs.jsonl", [
-        _judge("i1", "gpt-4o", "j1", 4),
-    ])
+    _write_jsonl(
+        run_dir / "outputs.jsonl",
+        [
+            _inference("i1", "gpt-4o", 100, 50),
+        ],
+    )
+    _write_jsonl(
+        run_dir / "judge_outputs.jsonl",
+        [
+            _judge("i1", "gpt-4o", "j1", 4),
+        ],
+    )
 
     summary = summarize(cfg)
     # pricing enabled but no config for gpt-4o → empty cost dict
@@ -166,12 +194,18 @@ def test_metrics_json_export(tmp_path):
     run_dir = tmp_path / "test"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_jsonl(run_dir / "outputs.jsonl", [
-        _inference("i1", "gpt-4o", 100, 50),
-    ])
-    _write_jsonl(run_dir / "judge_outputs.jsonl", [
-        _judge("i1", "gpt-4o", "j1", 4),
-    ])
+    _write_jsonl(
+        run_dir / "outputs.jsonl",
+        [
+            _inference("i1", "gpt-4o", 100, 50),
+        ],
+    )
+    _write_jsonl(
+        run_dir / "judge_outputs.jsonl",
+        [
+            _judge("i1", "gpt-4o", "j1", 4),
+        ],
+    )
 
     summarize(cfg)
     metrics_path = cfg.metrics_path()

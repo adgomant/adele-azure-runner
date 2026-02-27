@@ -7,7 +7,7 @@ import logging
 import time
 from typing import Any
 
-from adele_runner.config import AppConfig, FoundryInferenceConfig
+from adele_runner.config import AppConfig
 from adele_runner.schemas import DatasetItem, InferenceOutput
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,6 @@ class FoundryAdapter:
 
     def __init__(self, config: AppConfig) -> None:
         self._cfg = config
-        self._inference_cfg: FoundryInferenceConfig = config.inference.foundry
         self._client = self._build_client()
 
     def _build_client(self) -> Any:
@@ -26,13 +25,11 @@ class FoundryAdapter:
             from azure.ai.inference import ChatCompletionsClient  # type: ignore[import]
             from azure.core.credentials import AzureKeyCredential  # type: ignore[import]
         except ImportError as exc:
-            raise ImportError(
-                "azure-ai-inference is required. Run: uv sync"
-            ) from exc
+            raise ImportError("azure-ai-inference is required. Run: uv sync") from exc
 
         api_key = self._cfg.get_foundry_api_key()
         return ChatCompletionsClient(
-            endpoint=self._inference_cfg.endpoint,
+            endpoint=self._cfg.azure.foundry.endpoint,
             credential=AzureKeyCredential(api_key),
         )
 
@@ -40,7 +37,7 @@ class FoundryAdapter:
         """Run a single inference call and return a structured output."""
         from azure.ai.inference.models import UserMessage  # type: ignore[import]
 
-        cfg = self._inference_cfg
+        inf = self._cfg.inference
         messages = [UserMessage(content=item.prompt)]
 
         timeout_s = self._cfg.concurrency.request_timeout_s
@@ -51,10 +48,10 @@ class FoundryAdapter:
                 asyncio.to_thread(
                     self._client.complete,
                     messages=messages,
-                    model=cfg.model,
-                    temperature=cfg.temperature,
-                    max_tokens=cfg.max_tokens,
-                    top_p=cfg.top_p,
+                    model=inf.model,
+                    temperature=inf.temperature,
+                    max_tokens=inf.max_tokens,
+                    top_p=inf.top_p,
                 ),
                 timeout=timeout_s,
             )
@@ -75,7 +72,7 @@ class FoundryAdapter:
 
         return InferenceOutput(
             instance_id=item.instance_id,
-            model_id=cfg.model,
+            model_id=inf.model,
             prompt=item.prompt,
             response=choice.message.content or "",
             tokens_prompt=usage.prompt_tokens if usage else None,

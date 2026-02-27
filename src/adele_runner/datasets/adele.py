@@ -57,9 +57,7 @@ def load_adele(
     try:
         from datasets import load_dataset  # type: ignore[import]
     except ImportError as exc:
-        raise ImportError(
-            "The 'datasets' package is required. Install with: uv sync"
-        ) from exc
+        raise ImportError("The 'datasets' package is required. Install with: uv sync") from exc
 
     logger.info("Loading dataset '%s' split='%s' …", hf_id, split)
     ds = load_dataset(hf_id, split=split, trust_remote_code=False)
@@ -73,13 +71,11 @@ def load_adele(
 
     if prompt_col is None:
         raise ValueError(
-            f"Cannot find a prompt column in {columns}. "
-            f"Expected one of {_PROMPT_COLS}."
+            f"Cannot find a prompt column in {columns}. Expected one of {_PROMPT_COLS}."
         )
     if gt_col is None:
         raise ValueError(
-            f"Cannot find a ground-truth column in {columns}. "
-            f"Expected one of {_GT_COLS}."
+            f"Cannot find a ground-truth column in {columns}. Expected one of {_GT_COLS}."
         )
 
     logger.info(

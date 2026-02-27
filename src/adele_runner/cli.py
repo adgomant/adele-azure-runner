@@ -15,12 +15,8 @@ from rich.logging import RichHandler
 from adele_runner.config import AppConfig, JudgeConfig, load_config
 from adele_runner.schemas import InferenceOutput
 
-# Maps user-friendly CLI mode names to internal config values.
-_MODE_MAP: dict[str, str] = {
-    "foundry": "foundry_async",
-    "batch": "azure_openai_batch",
-    "auto": "auto",
-}
+# Valid inference mode values for CLI --mode flag.
+_VALID_MODES = {"foundry", "batch", "auto"}
 
 app = typer.Typer(
     name="adele-runner",
@@ -64,8 +60,7 @@ def _parse_judge_flag(value: str) -> JudgeConfig:
         model, provider = value.rsplit(":", 1)
         if provider not in _VALID_JUDGE_PROVIDERS:
             raise typer.BadParameter(
-                f"Invalid judge provider '{provider}' in '{value}'. "
-                f"Use MODEL or MODEL:batch."
+                f"Invalid judge provider '{provider}' in '{value}'. Use MODEL or MODEL:batch."
             )
     else:
         model, provider = value, "foundry"
@@ -85,22 +80,14 @@ def apply_cli_overrides(
     *models* sets the first model only (multi-model loop is handled by the caller).
     """
     if mode is not None:
-        internal = _MODE_MAP.get(mode)
-        if internal is None:
+        if mode not in _VALID_MODES:
             raise typer.BadParameter(
-                f"Invalid mode '{mode}'. Choose from: {', '.join(_MODE_MAP)}"
+                f"Invalid mode '{mode}'. Choose from: {', '.join(sorted(_VALID_MODES))}"
             )
-        cfg.inference.mode = internal  # type: ignore[assignment]
-        if mode == "batch":
-            cfg.inference.batch.enabled = True
+        cfg.inference.mode = mode  # type: ignore[assignment]
 
     if models:
-        model = models[0]
-        resolved = cfg.resolve_inference_mode()
-        if resolved == "azure_openai_batch":
-            cfg.inference.batch.deployment = model
-        else:
-            cfg.inference.foundry.model = model
+        cfg.inference.model = models[0]
 
     if judges:
         cfg.judging.judges = [_parse_judge_flag(j) for j in judges]
@@ -133,12 +120,15 @@ def _load_ground_truths(cfg: AppConfig) -> dict[str, str]:
                 cached = json.load(fh)
             if isinstance(cached, dict) and cached:
                 logging.getLogger(__name__).info(
-                    "Loaded %d ground truths from cache: %s", len(cached), cache_path,
+                    "Loaded %d ground truths from cache: %s",
+                    len(cached),
+                    cache_path,
                 )
                 return cached
         except Exception:
             logging.getLogger(__name__).warning(
-                "Failed to read ground truth cache %s, re-downloading.", cache_path,
+                "Failed to read ground truth cache %s, re-downloading.",
+                cache_path,
             )
 
     # Download from HF
@@ -165,11 +155,7 @@ def _load_ground_truths(cfg: AppConfig) -> dict[str, str]:
 
 def _set_model_for_run(cfg: AppConfig, model: str) -> None:
     """Point config at *model* for the next inference run."""
-    resolved = cfg.resolve_inference_mode()
-    if resolved == "azure_openai_batch":
-        cfg.inference.batch.deployment = model
-    else:
-        cfg.inference.foundry.model = model
+    cfg.inference.model = model
 
 
 def _print_dry_run(cfg: AppConfig, *, items_count: int | None = None) -> None:
@@ -177,15 +163,13 @@ def _print_dry_run(cfg: AppConfig, *, items_count: int | None = None) -> None:
     from adele_runner.utils.io import build_dedup_index
 
     mode = cfg.resolve_inference_mode()
-    model = (
-        cfg.inference.batch.deployment
-        if mode == "azure_openai_batch"
-        else cfg.inference.foundry.model
-    )
+    model = cfg.inference.model
 
     console.print("\n[bold cyan]--- Dry-Run Summary ---[/bold cyan]")
     console.print(f"  Run ID:         {cfg.run.run_id}")
-    console.print(f"  Dataset:        {cfg.dataset.hf_id} (split={cfg.dataset.split}, limit={cfg.dataset.limit})")
+    console.print(
+        f"  Dataset:        {cfg.dataset.hf_id} (split={cfg.dataset.split}, limit={cfg.dataset.limit})"
+    )
     if items_count is not None:
         console.print(f"  Items loaded:   {items_count}")
     console.print(f"  Mode:           {mode}")
@@ -203,7 +187,9 @@ def _print_dry_run(cfg: AppConfig, *, items_count: int | None = None) -> None:
     if cfg.judging.enabled:
         judge_names = [j.name for j in cfg.judging.judges]
         console.print(f"  Judging:        enabled (template={cfg.judging.prompt_template})")
-        console.print(f"  Judges:         {', '.join(judge_names) if judge_names else '(none configured)'}")
+        console.print(
+            f"  Judges:         {', '.join(judge_names) if judge_names else '(none configured)'}"
+        )
     else:
         console.print("  Judging:        disabled")
 
@@ -221,8 +207,12 @@ def _print_dry_run(cfg: AppConfig, *, items_count: int | None = None) -> None:
 @app.command()
 def run_inference(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to YAML config."),
-    model: list[str] | None = typer.Option(None, "--model", "-m", help="Model name(s). Repeatable."),
-    mode: str | None = typer.Option(None, "--mode", help="Inference mode: foundry, batch, or auto."),
+    model: list[str] | None = typer.Option(
+        None, "--model", "-m", help="Model name(s). Repeatable."
+    ),
+    mode: str | None = typer.Option(
+        None, "--mode", help="Inference mode: foundry, batch, or auto."
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print plan and exit without API calls."),
 ) -> None:
     """Run inference over the ADeLe dataset."""
@@ -262,8 +252,12 @@ def run_inference(
 @app.command()
 def run_judge(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to YAML config."),
-    judge: list[str] | None = typer.Option(None, "--judge", "-j", help="Judge model (MODEL or MODEL:batch). Repeatable."),
-    judge_template: str | None = typer.Option(None, "--judge-template", help="Judge prompt template: v1 or v2."),
+    judge: list[str] | None = typer.Option(
+        None, "--judge", "-j", help="Judge model (MODEL or MODEL:batch). Repeatable."
+    ),
+    judge_template: str | None = typer.Option(
+        None, "--judge-template", help="Judge prompt template: v1 or v2."
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print plan and exit without API calls."),
 ) -> None:
     """Run judge evaluation over existing inference outputs."""
@@ -276,7 +270,9 @@ def run_judge(
 
     outputs_path = cfg.outputs_path()
     if not outputs_path.exists():
-        typer.echo(f"No inference outputs found at {outputs_path}. Run run-inference first.", err=True)
+        typer.echo(
+            f"No inference outputs found at {outputs_path}. Run run-inference first.", err=True
+        )
         raise typer.Exit(1)
 
     inference_outputs = read_jsonl(outputs_path, InferenceOutput)
@@ -323,10 +319,18 @@ def summarize(
 @app.command()
 def run_all(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to YAML config."),
-    model: list[str] | None = typer.Option(None, "--model", "-m", help="Model name(s). Repeatable."),
-    mode: str | None = typer.Option(None, "--mode", help="Inference mode: foundry, batch, or auto."),
-    judge: list[str] | None = typer.Option(None, "--judge", "-j", help="Judge model (MODEL or MODEL:batch). Repeatable."),
-    judge_template: str | None = typer.Option(None, "--judge-template", help="Judge prompt template: v1 or v2."),
+    model: list[str] | None = typer.Option(
+        None, "--model", "-m", help="Model name(s). Repeatable."
+    ),
+    mode: str | None = typer.Option(
+        None, "--mode", help="Inference mode: foundry, batch, or auto."
+    ),
+    judge: list[str] | None = typer.Option(
+        None, "--judge", "-j", help="Judge model (MODEL or MODEL:batch). Repeatable."
+    ),
+    judge_template: str | None = typer.Option(
+        None, "--judge-template", help="Judge prompt template: v1 or v2."
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print plan and exit without API calls."),
 ) -> None:
     """Run the full pipeline: inference → judge → merge → summarize."""

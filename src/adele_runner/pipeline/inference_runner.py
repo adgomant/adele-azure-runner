@@ -118,11 +118,7 @@ async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[Inf
     ensure_run_dir(run_dir)
     outputs_path = config.outputs_path()
 
-    model_id = (
-        config.inference.batch.deployment
-        if mode == "azure_openai_batch"
-        else config.inference.foundry.model
-    )
+    model_id = config.inference.model
 
     # --- Write initial RunManifest ---
     manifest = RunManifest(
@@ -149,9 +145,13 @@ async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[Inf
 
     logger.info("Inference mode: %s", mode)
 
-    if mode == "azure_openai_batch":
+    if mode == "batch":
         completed = await asyncio.to_thread(
-            _run_azure_openai_batch, config, pending, run_dir, outputs_path,
+            _run_azure_openai_batch,
+            config,
+            pending,
+            run_dir,
+            outputs_path,
         )
     else:
         completed = await _run_foundry_async(config, pending, outputs_path)

@@ -160,6 +160,12 @@ Backoff is exponential, starting at `backoff_base_s` and capped at `backoff_max_
 ## Config System
 
 ```
+.env / .env.local
+    │
+    ▼
+load_dotenv()           ← Environment variables loaded at CLI startup
+    │
+    ▼
 config.yaml
     │
     ▼
@@ -174,5 +180,11 @@ apply_cli_overrides()   ← --model, --mode, --judge, --judge-template
     ▼
 validate_config()       ← Placeholder detection, required fields
 ```
+
+The config has a clear separation:
+- **`azure`** section: connection settings (endpoints, API key env vars) — set once per environment
+- **`inference`** section: model name and sampling parameters — change per run
+- **`judging`** section: judge models and templates — change per run
+- **`concurrency`** section: timeouts, retries, and batch completion window
 
 Pydantic models define all fields with defaults, so a minimal YAML works. CLI flags override specific values. Validation catches common mistakes (placeholder endpoints, missing models) before API calls.
