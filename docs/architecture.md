@@ -26,6 +26,7 @@ src/adele_runner/
     io.py                 ← JSONL/Parquet I/O, dedup index
     retry.py              ← Tenacity retry with smart error classification
     concurrency.py        ← Bounded async concurrency (semaphore)
+    batch_split.py        ← Split large batch request files to respect Azure limits
 ```
 
 ## Data Flow
@@ -175,7 +176,7 @@ load_config()           ← YAML → dict
 AppConfig.model_validate()  ← Pydantic validation
     │
     ▼
-apply_cli_overrides()   ← --model, --mode, --judge, --judge-template
+apply_cli_overrides()   ← --run-id, --model, --mode, --judge, --judge-template, --tpm, --rpm
     │
     ▼
 apply_rate_limit_overrides()  ← Auto-compute concurrency from TPM/RPM

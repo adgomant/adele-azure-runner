@@ -19,6 +19,10 @@ judging:
     - name: "gpt4o-judge"
       provider: "foundry"
       model: "gpt-4o"
+      # max_tokens: 512         # Max completion tokens (default: 512)
+      # rate_limits:            # Optional per-judge rate limits (foundry only)
+      #   tokens_per_minute: 80000
+      #   requests_per_minute: 300
     - name: "claude-judge"
       provider: "foundry"
       model: "claude-3-opus"
@@ -31,6 +35,9 @@ Or override from the CLI:
 
 ```bash
 uv run adele-runner run-judge --judge gpt-4o --judge claude-3-opus:foundry --judge gpt-4o:batch
+
+# With per-judge rate limits and max_tokens
+uv run adele-runner run-judge --judge gpt-4o:foundry:80000:300:1024 --judge claude-3-opus
 ```
 
 ## Prompt Templates
@@ -134,5 +141,7 @@ Every judge output follows this schema:
 | `reason` | `str` | Free-text explanation from the judge |
 | `raw_output` | `str` | Unprocessed judge response (for auditability) |
 | `judge_prompt` | `str` | The full prompt sent to the judge |
+| `tokens_prompt` | `int \| null` | Prompt token count (if reported by API) |
+| `tokens_completion` | `int \| null` | Completion token count |
 | `timestamp` | `datetime` | When the evaluation was recorded |
 | `run_id` | `str` | Run identifier |

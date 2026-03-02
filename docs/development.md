@@ -48,6 +48,7 @@ src/adele_runner/
     io.py                     # JSONL/Parquet I/O, dedup index builder
     retry.py                  # Tenacity retry with smart error classification
     concurrency.py            # Bounded async concurrency (semaphore)
+    batch_split.py            # Split large batch request files to respect Azure limits
 ```
 
 ## Running Tests
@@ -60,8 +61,10 @@ uv run pytest tests/ -v
 
 | File | What it tests |
 |---|---|
-| `test_cli_overrides.py` | `--model`, `--mode`, `--judge`, `--judge-template` override logic |
+| `test_batch_split.py` | Batch request file splitting logic, Azure limits, edge cases |
+| `test_cli_overrides.py` | `--run-id`, `--model`, `--mode`, `--judge`, `--judge-template`, `--tpm`, `--rpm`, `max_tokens` override logic |
 | `test_config_validation.py` | Placeholder detection, missing endpoints, invalid templates |
+| `test_dotenv_loading.py` | `.env` / `.env.local` loading and precedence |
 | `test_dry_run.py` | `--dry-run` flag: summary output, validation gating |
 | `test_inter_rater.py` | Cohen's kappa: perfect/zero/chance agreement, known values |
 | `test_judge_v2.py` | v2 bare-integer parsing: clean int, clamping, preamble, fallback |
@@ -69,6 +72,7 @@ uv run pytest tests/ -v
 | `test_parsing.py` | v1 judge JSON parsing: valid, malformed, markdown fences, regex |
 | `test_pick_col.py` | Case-insensitive column detection, alias resolution |
 | `test_pricing.py` | Token aggregation, cost calculation, pricing disabled |
+| `test_rate_limit_compute.py` | Rate limit auto-tuning, `get_max_judge_max_tokens()` |
 | `test_resume_dedup.py` | JSONL append, dedup index, resume filtering |
 | `test_retry_filter.py` | `is_retryable()`: transport errors, HTTP status codes, logic errors |
 | `test_run_manifest.py` | Manifest creation and update |

@@ -9,6 +9,7 @@ Run the [ADeLe benchmark](https://huggingface.co/datasets/CFI-Kinds-of-Intellige
 - **Multi-judge evaluation** -- run multiple judges (e.g. GPT-4o + Claude) per instance, mix Foundry async and Batch judges in the same run
 - **Two judge prompt templates** -- structured JSON (v1) or bare-integer (v2) scoring
 - **Async bounded concurrency** with exponential backoff, smart retry filtering, and per-request timeouts
+- **Rate-limit auto-tuning** -- provide TPM/RPM and the runner computes optimal concurrency settings
 - **Idempotent runs** -- resume from any interruption; completed instances are skipped automatically
 - **Durable artifacts** -- `outputs.jsonl`, `judge_outputs.jsonl`, `merged_results.parquet`, `run_manifest.json`, `metrics.json`
 - **Metrics** -- per-judge score distributions, verification pass rate, inter-rater agreement (Cohen's kappa), token usage, optional cost estimation
@@ -67,6 +68,12 @@ Use `--dry-run` on any command to preview the plan without making API calls:
 
 ```bash
 uv run adele-runner run-inference --model gpt-4o --dry-run
+```
+
+Use `--run-id` before any command to override the run ID (useful for comparing models):
+
+```bash
+uv run adele-runner --run-id gpt4o_run run-all --model gpt-4o --judge gpt-4o
 ```
 
 ## Output Artifacts

@@ -24,6 +24,8 @@ azure:
     endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
     api_key_env: "AZURE_OPENAI_API_KEY"
     api_version: "<API_VERSION>"
+    max_requests_per_file: 50000     # Max requests per batch file (Azure limit: 100,000)
+    max_bytes_per_file: 100000000    # Max bytes per batch file (Azure limit: 200 MB)
 
 inference:
   mode: "batch"
@@ -121,6 +123,21 @@ uv run adele-runner run-judge --judge gpt-4o:batch --judge claude-3-opus
 ```
 
 Foundry judges run as async coroutines while batch judges run in a separate thread. Both execute concurrently via `asyncio.gather()`.
+
+## Automatic File Splitting
+
+Azure imposes hard limits on batch files: 100,000 requests and 200 MB per file. When a batch request set exceeds the configured limits, the runner automatically splits it into multiple chunks.
+
+Splitting is controlled by two config fields under `azure.batch`:
+
+| Field | Default | Azure hard limit | Description |
+|---|---|---|---|
+| `max_requests_per_file` | `50,000` | `100,000` | Maximum requests per batch file |
+| `max_bytes_per_file` | `100,000,000` (100 MB) | `200,000,000` (200 MB) | Maximum bytes per batch file |
+
+The defaults are conservative (50% of Azure's hard limits) to provide a safety margin. Each chunk is uploaded and processed as a separate batch job, and results are combined automatically.
+
+This applies to both inference and judge batch operations. Config validation rejects values that exceed Azure's hard limits.
 
 ## Optional Dependency
 

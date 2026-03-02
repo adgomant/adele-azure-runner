@@ -41,6 +41,7 @@ judging:
     - name: "gpt4o-foundry"
       provider: "foundry"
       model: "gpt-4o"
+      # max_tokens: 512         # Max completion tokens (default: 512)
     - name: "claude-foundry"
       provider: "foundry"
       model: "claude-3-opus"

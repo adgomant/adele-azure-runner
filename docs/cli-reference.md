@@ -3,8 +3,20 @@
 The ADeLe Runner CLI is built with [Typer](https://typer.tiangolo.com/). All commands are invoked through the `adele-runner` entry point.
 
 ```bash
-uv run adele-runner <command> [options]
+uv run adele-runner [GLOBAL OPTIONS] <command> [OPTIONS]
 ```
+
+## Global Options
+
+These options go **before** the subcommand:
+
+```bash
+uv run adele-runner --run-id my_run run-inference --model gpt-4o
+```
+
+| Flag | Short | Type | Description |
+|---|---|---|---|
+| `--run-id` | `-r` | `TEXT` | Run ID. Overrides `run.run_id` in config |
 
 ## Commands
 
@@ -40,8 +52,10 @@ uv run adele-runner run-inference [OPTIONS]
 | Flag | Short | Type | Description |
 |---|---|---|---|
 | `--config` | `-c` | `PATH` | Path to YAML config |
-| `--model` | `-m` | `TEXT` | Model name or deployment. Repeatable for multi-model runs |
+| `--model` | `-m` | `TEXT` | Model name or deployment |
 | `--mode` | | `TEXT` | Inference mode: `foundry`, `batch`, or `auto` |
+| `--tpm` | | `INT` | Tokens per minute rate limit (foundry only, requires `--rpm`) |
+| `--rpm` | | `INT` | Requests per minute rate limit (foundry only, requires `--tpm`) |
 | `--dry-run` | | `bool` | Preview plan without API calls |
 
 **Examples:**
@@ -53,14 +67,12 @@ uv run adele-runner run-inference --model gpt-4o
 # Batch mode
 uv run adele-runner run-inference --model gpt-4o --mode batch
 
-# Multiple models in one run
-uv run adele-runner run-inference --model gpt-4o --model llama-3-70b
+# With rate limits for auto-tuned concurrency
+uv run adele-runner run-inference --model gpt-4o --tpm 80000 --rpm 300
 
 # Dry-run preview
 uv run adele-runner run-inference --model gpt-4o --dry-run
 ```
-
-When multiple `--model` flags are provided, inference runs sequentially for each model. The dedup index prevents re-processing instances that are already complete for a given model.
 
 ---
 
@@ -77,7 +89,7 @@ uv run adele-runner run-judge [OPTIONS]
 | Flag | Short | Type | Description |
 |---|---|---|---|
 | `--config` | `-c` | `PATH` | Path to YAML config |
-| `--judge` | `-j` | `TEXT` | Judge model. Repeatable. Format: `MODEL` (Foundry) or `MODEL:batch` |
+| `--judge` | `-j` | `TEXT` | Judge model. Repeatable. See [Judge flag format](#judge-flag-format) below |
 | `--judge-template` | | `TEXT` | Judge prompt template: `v1` or `v2` |
 | `--dry-run` | | `bool` | Preview plan without API calls |
 
@@ -90,6 +102,9 @@ uv run adele-runner run-judge --judge gpt-4o --judge claude-3-opus
 # Mix Foundry and Batch judges
 uv run adele-runner run-judge --judge gpt-4o:batch --judge claude-3-opus
 
+# Foundry judge with rate limits
+uv run adele-runner run-judge --judge gpt-4o:foundry:80000:300
+
 # Use v2 (bare integer) prompt template
 uv run adele-runner run-judge --judge gpt-4o --judge-template v2
 
@@ -101,9 +116,23 @@ When `--judge` flags are provided, they **replace** the judges list from `config
 
 ### Judge Flag Format
 
-- `MODEL` -- uses Foundry async (e.g. `gpt-4o`, `claude-3-opus`)
-- `MODEL:batch` -- uses Azure OpenAI Batch API (e.g. `gpt-4o:batch`)
-- `MODEL:foundry` -- explicitly Foundry (same as bare `MODEL`)
+```
+MODEL                              → foundry provider, no rate limits
+MODEL:PROVIDER                     → explicit provider (foundry or batch)
+MODEL:PROVIDER:TPM:RPM             → explicit provider + rate limits (foundry only)
+MODEL:PROVIDER:TPM:RPM:MAX_TOKENS  → provider + rate limits + max tokens (foundry only)
+```
+
+Examples:
+
+```bash
+--judge gpt-4o                          # foundry, no rate limits
+--judge gpt-4o:batch                    # batch provider
+--judge gpt-4o:foundry:80000:300        # foundry with TPM=80000 RPM=300
+--judge gpt-4o:foundry:80000:300:1024   # foundry with rate limits + max_tokens=1024
+```
+
+Rate limits for batch judges are not supported (batch uses file splitting instead). Providing TPM/RPM for a batch judge is an error.
 
 ---
 
@@ -162,9 +191,11 @@ uv run adele-runner run-all [OPTIONS]
 | Flag | Short | Type | Description |
 |---|---|---|---|
 | `--config` | `-c` | `PATH` | Path to YAML config |
-| `--model` | `-m` | `TEXT` | Model name(s). Repeatable |
+| `--model` | `-m` | `TEXT` | Model name or deployment |
 | `--mode` | | `TEXT` | Inference mode: `foundry`, `batch`, or `auto` |
-| `--judge` | `-j` | `TEXT` | Judge model. Repeatable. Format: `MODEL` or `MODEL:batch` |
+| `--tpm` | | `INT` | Tokens per minute rate limit (foundry only, requires `--rpm`) |
+| `--rpm` | | `INT` | Requests per minute rate limit (foundry only, requires `--tpm`) |
+| `--judge` | `-j` | `TEXT` | Judge model. Repeatable. See [Judge flag format](#judge-flag-format) |
 | `--judge-template` | | `TEXT` | Judge prompt template: `v1` or `v2` |
 | `--dry-run` | | `bool` | Preview plan without API calls |
 
@@ -174,8 +205,8 @@ uv run adele-runner run-all [OPTIONS]
 # Full pipeline with one model and two judges
 uv run adele-runner run-all --model gpt-4o --judge gpt-4o --judge claude-3-opus
 
-# Multi-model comparison
-uv run adele-runner run-all --model gpt-4o --model llama-3-70b --judge gpt-4o
+# With rate limits
+uv run adele-runner run-all --model gpt-4o --tpm 80000 --rpm 300 --judge gpt-4o
 
 # Dry-run the full pipeline
 uv run adele-runner run-all --model gpt-4o --judge gpt-4o --dry-run
