@@ -9,7 +9,7 @@ build/
 .ruff_cache/
 .env.local
 .DS_Store
-/PROMPT_AGENT.md
-/PROJECT_BRIEF.md
-/TODO.md
-/config.yaml
+PROMPT_AGENT.md
+PROJECT_BRIEF.md
+TODO.md
+config.yaml
