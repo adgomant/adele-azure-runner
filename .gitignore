@@ -7,5 +7,9 @@ dist/
 build/
 .pytest_cache/
 .ruff_cache/
-.env
+.env.local
 .DS_Store
+/PROMPT_AGENT.md
+/PROJECT_BRIEF.md
+/TODO.md
+/config.yaml

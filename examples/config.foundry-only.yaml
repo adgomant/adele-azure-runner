@@ -1,0 +1,37 @@
+# Minimal config for Foundry-only inference (no batch, no judging).
+#
+# Usage:
+#   cp examples/config.foundry-only.yaml config.yaml
+#   export AZURE_AI_API_KEY="<your-key>"
+#   uv run adele-runner run-inference --model gpt-4o
+
+azure:
+  foundry:
+    endpoint: "https://<YOUR-RESOURCE>.services.ai.azure.com/models"
+    api_key_env: "AZURE_AI_API_KEY"
+
+run:
+  run_id: "foundry_only_run"
+  output_dir: "runs"
+
+dataset:
+  hf_id: "CFI-Kinds-of-Intelligence/ADeLe_battery_v1dot0"
+  split: "train"
+  limit: 50
+
+inference:
+  mode: "foundry"
+  model: ""          # set via --model or edit this field
+  temperature: 0.0
+  max_tokens: 2048
+
+concurrency:
+  max_in_flight: 16
+  request_timeout_s: 120
+  max_retries: 6
+
+judging:
+  enabled: false
+
+logging:
+  level: "INFO"
