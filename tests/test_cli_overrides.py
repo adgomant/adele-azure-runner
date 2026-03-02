@@ -1,4 +1,4 @@
-"""Tests for CLI override logic (--model, --mode, --judge, --judge-template, --tpm, --rpm)."""
+"""Tests for CLI override logic (--run-id, --model, --mode, --judge, --judge-template, --tpm, --rpm)."""
 
 from __future__ import annotations
 
@@ -12,6 +12,30 @@ from adele_runner.config import AppConfig
 def _base_config(**overrides) -> AppConfig:
     """Return a minimal AppConfig, optionally with nested overrides."""
     return AppConfig.model_validate(overrides)
+
+
+# ---------------------------------------------------------------------------
+# --run-id overrides
+# ---------------------------------------------------------------------------
+
+
+def test_run_id_overrides_config():
+    cfg = _base_config(run={"run_id": "from-config"})
+    apply_cli_overrides(cfg, run_id="from-cli")
+    assert cfg.run.run_id == "from-cli"
+
+
+def test_run_id_none_preserves_config():
+    cfg = _base_config(run={"run_id": "from-config"})
+    apply_cli_overrides(cfg)
+    assert cfg.run.run_id == "from-config"
+
+
+def test_run_id_with_other_overrides():
+    cfg = _base_config()
+    apply_cli_overrides(cfg, run_id="my-run", model="gpt-4o")
+    assert cfg.run.run_id == "my-run"
+    assert cfg.inference.model == "gpt-4o"
 
 
 # ---------------------------------------------------------------------------

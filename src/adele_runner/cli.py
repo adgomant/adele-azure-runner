@@ -20,10 +20,24 @@ _VALID_MODES = {"foundry", "batch", "auto"}
 
 app = typer.Typer(
     name="adele-runner",
-    help="ADeLe benchmark inference + multi-judge evaluation on Azure AI Foundry.",
     add_completion=False,
 )
 console = Console()
+
+# Module-level state set by @app.callback (global options).
+_cli_run_id: str | None = None
+
+
+@app.callback()
+def _main(
+    run_id: str | None = typer.Option(
+        None, "--run-id", "-r", help="Run ID. Overrides config run.run_id."
+    ),
+) -> None:
+    """ADeLe benchmark inference + multi-judge evaluation on Azure AI Foundry."""
+    global _cli_run_id  # noqa: PLW0603
+    _cli_run_id = run_id
+
 
 # Load .env files. Order matters: .env.local first so its values take
 # precedence over .env. override=False means shell env vars always win.
@@ -115,6 +129,7 @@ def _parse_judge_flag(value: str) -> JudgeConfig:
 def apply_cli_overrides(
     cfg: AppConfig,
     *,
+    run_id: str | None = None,
     mode: str | None = None,
     model: str | None = None,
     judges: list[str] | None = None,
@@ -126,6 +141,9 @@ def apply_cli_overrides(
 
     CLI values always take precedence over config-file values.
     """
+    if run_id is not None:
+        cfg.run.run_id = run_id
+
     if mode is not None:
         if mode not in _VALID_MODES:
             raise typer.BadParameter(
@@ -287,7 +305,7 @@ def run_inference(
 
     cfg = _get_config(config)
     _setup_logging(cfg.logging.level)
-    apply_cli_overrides(cfg, mode=mode, model=model, tpm=tpm, rpm=rpm)
+    apply_cli_overrides(cfg, run_id=_cli_run_id, mode=mode, model=model, tpm=tpm, rpm=rpm)
     if cfg.resolve_inference_mode() == "foundry":
         cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, cfg.inference.max_tokens)
 
@@ -326,7 +344,7 @@ def run_judge(
 
     cfg = _get_config(config)
     _setup_logging(cfg.logging.level)
-    apply_cli_overrides(cfg, judges=judge, judge_template=judge_template)
+    apply_cli_overrides(cfg, run_id=_cli_run_id, judges=judge, judge_template=judge_template)
     judge_rl = cfg.get_most_restrictive_judge_rate_limits()
     if judge_rl is not None:
         cfg.apply_rate_limit_overrides(judge_rl, max_tokens=cfg.get_max_judge_max_tokens())
@@ -362,6 +380,7 @@ def merge_results(
 
     cfg = _get_config(config)
     _setup_logging(cfg.logging.level)
+    apply_cli_overrides(cfg, run_id=_cli_run_id)
 
     path = _merge(cfg)
     console.print(f"[bold green]Merged results written to {path}[/bold green]")
@@ -376,6 +395,7 @@ def summarize(
 
     cfg = _get_config(config)
     _setup_logging(cfg.logging.level)
+    apply_cli_overrides(cfg, run_id=_cli_run_id)
     _summarize(cfg)
 
 
@@ -410,7 +430,14 @@ def run_all(
     cfg = _get_config(config)
     _setup_logging(cfg.logging.level)
     apply_cli_overrides(
-        cfg, mode=mode, model=model, judges=judge, judge_template=judge_template, tpm=tpm, rpm=rpm
+        cfg,
+        run_id=_cli_run_id,
+        mode=mode,
+        model=model,
+        judges=judge,
+        judge_template=judge_template,
+        tpm=tpm,
+        rpm=rpm,
     )
 
     # Apply inference rate-limit overrides (foundry only)

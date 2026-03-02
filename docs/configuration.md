@@ -237,6 +237,20 @@ See [config.example.yaml](../config.example.yaml) for a fully annotated config f
 
 All CLI flags override the corresponding config-file values.
 
+### Global flags
+
+These flags go **before** the subcommand:
+
+```bash
+uv run adele-runner --run-id my_run run-inference --model gpt-4o
+```
+
+| Flag | Type | Description |
+|---|---|---|
+| `--run-id` / `-r` | `str` | Run ID. Overrides `run.run_id` in config |
+
+### Subcommand flags
+
 | Flag | Type | Commands | Description |
 |---|---|---|---|
 | `--config` / `-c` | `Path` | All | Path to YAML config file |
