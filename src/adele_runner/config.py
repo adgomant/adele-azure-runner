@@ -73,6 +73,7 @@ class ConcurrencyConfig(BaseModel):
     backoff_max_s: float = 30.0
     max_poll_time_s: float = 3600.0
     batch_completion_window: str = "24h"
+    effective_rpm: int | None = None  # set by rate-limit auto-tuning
 
 
 class JudgeConfig(BaseModel):
@@ -137,8 +138,8 @@ def compute_concurrency_from_rate_limits(
     # Effective RPM = tighter constraint
     effective_rpm = min(rpm, rpm_from_tpm)
 
-    # Estimate avg request duration from max_tokens (~80 tok/s, capped 2–300s)
-    avg_duration_s = max(2.0, min(300.0, max_tokens / 80))
+    # Estimate avg request duration from max_tokens (~200 tok/s, capped 2–300s)
+    avg_duration_s = max(2.0, min(300.0, max_tokens / 200))
 
     # max_in_flight ≈ effective_rpm * avg_duration / 60, 80% safety margin
     max_in_flight = max(1, int(effective_rpm * avg_duration_s / 60 * 0.8))
@@ -155,6 +156,7 @@ def compute_concurrency_from_rate_limits(
         request_timeout_s=request_timeout_s,
         backoff_base_s=backoff_base_s,
         backoff_max_s=backoff_max_s,
+        effective_rpm=max(1, int(effective_rpm)),
     )
 
 
@@ -217,11 +219,12 @@ class AppConfig(BaseModel):
 
         logger.info(
             "Rate-limit auto-tuning: TPM=%d RPM=%d max_tokens=%d → "
-            "max_in_flight=%d request_timeout=%.1fs backoff=%.1f–%.1fs",
+            "max_in_flight=%d effective_rpm=%s request_timeout=%.1fs backoff=%.1f–%.1fs",
             rate_limits.tokens_per_minute,
             rate_limits.requests_per_minute,
             mt,
             computed.max_in_flight,
+            computed.effective_rpm,
             computed.request_timeout_s,
             computed.backoff_base_s,
             computed.backoff_max_s,

@@ -12,7 +12,7 @@ from typing import Any
 
 from adele_runner.config import AppConfig, JudgeConfig
 from adele_runner.schemas import InferenceOutput, JudgeOutput
-from adele_runner.utils.concurrency import bounded_gather
+from adele_runner.utils.concurrency import AsyncRateLimiter, bounded_gather
 from adele_runner.utils.io import append_jsonl, build_dedup_index, ensure_run_dir
 from adele_runner.utils.retry import make_retry_decorator
 
@@ -185,11 +185,14 @@ def parse_judge_v2(raw: str) -> dict[str, Any]:
 class JudgeAdapter:
     """Single-judge inference adapter (Azure AI Foundry, async)."""
 
-    def __init__(self, judge_cfg: JudgeConfig, app_cfg: AppConfig) -> None:
+    def __init__(
+        self, judge_cfg: JudgeConfig, app_cfg: AppConfig, rate_limiter: object | None = None
+    ) -> None:
         self._judge_cfg = judge_cfg
         self._app_cfg = app_cfg
         self._client = self._build_client()
         self._rate_limit_warned = False
+        self._rate_limiter = rate_limiter
 
     def _build_client(self) -> Any:
         try:
@@ -211,6 +214,8 @@ class JudgeAdapter:
         except AttributeError:
             return
         self._check_rate_limit_headers(headers)
+        if self._rate_limiter is not None:
+            self._rate_limiter.update_from_headers(headers)  # type: ignore[attr-defined]
 
     def _check_rate_limit_headers(self, headers: dict[str, str]) -> None:
         """Log a warning if actual rate limits differ significantly from config."""
@@ -288,6 +293,11 @@ class JudgeAdapter:
             raise
         raw = response.choices[0].message.content or ""
         usage = response.usage
+
+        if self._rate_limiter is not None and usage:
+            self._rate_limiter.update_token_usage(  # type: ignore[attr-defined]
+                usage.prompt_tokens or 0, usage.completion_tokens or 0
+            )
 
         parsed = parse_judge_v2(raw) if prompt_template == "v2" else parse_judge_json(raw)
 
@@ -482,12 +492,23 @@ async def _run_foundry_judges(
     judge_path: Path,
 ) -> list[JudgeOutput]:
     """Run foundry judges via async bounded concurrency."""
+    # Construct rate limiter if effective_rpm was computed from rate limits
+    rate_limiter: AsyncRateLimiter | None = None
+    if config.concurrency.effective_rpm is not None:
+        judge_rl = config.get_most_restrictive_judge_rate_limits()
+        rate_limiter = AsyncRateLimiter(
+            config.concurrency.effective_rpm,
+            tpm=judge_rl.tokens_per_minute if judge_rl else None,
+        )
+        logger.info("Judge rate limiter enabled: %d RPM", config.concurrency.effective_rpm)
+
     retry_dec = make_retry_decorator(
         max_retries=config.concurrency.max_retries,
         backoff_base=config.concurrency.backoff_base_s,
         backoff_max=config.concurrency.backoff_max_s,
+        rate_limiter=rate_limiter,
     )
-    adapters = [JudgeAdapter(j, config) for j in foundry_judges]
+    adapters = [JudgeAdapter(j, config, rate_limiter=rate_limiter) for j in foundry_judges]
     coroutines = []
     prompt_template = config.judging.prompt_template
 
@@ -520,7 +541,9 @@ async def _run_foundry_judges(
     if not coroutines:
         return []
 
-    results = await bounded_gather(coroutines, max_concurrency=config.concurrency.max_in_flight)
+    results = await bounded_gather(
+        coroutines, max_concurrency=config.concurrency.max_in_flight, rate_limiter=rate_limiter
+    )
     outputs: list[JudgeOutput] = []
     for result in results:
         if isinstance(result, BaseException):

@@ -16,10 +16,11 @@ logger = logging.getLogger(__name__)
 class FoundryAdapter:
     """Wraps ChatCompletionsClient for a single Foundry-deployed model."""
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, rate_limiter: object | None = None) -> None:
         self._cfg = config
         self._client = self._build_client()
         self._rate_limit_warned = False
+        self._rate_limiter = rate_limiter
 
     def _build_client(self) -> Any:
         try:
@@ -41,6 +42,8 @@ class FoundryAdapter:
         except AttributeError:
             return
         self._check_rate_limit_headers(headers)
+        if self._rate_limiter is not None:
+            self._rate_limiter.update_from_headers(headers)  # type: ignore[attr-defined]
 
     def _check_rate_limit_headers(self, headers: dict[str, str]) -> None:
         """Log a warning if actual rate limits differ significantly from config."""
@@ -120,6 +123,11 @@ class FoundryAdapter:
         latency = time.monotonic() - t0
         choice = response.choices[0]
         usage = response.usage
+
+        if self._rate_limiter is not None and usage:
+            self._rate_limiter.update_token_usage(  # type: ignore[attr-defined]
+                usage.prompt_tokens or 0, usage.completion_tokens or 0
+            )
 
         return InferenceOutput(
             instance_id=item.instance_id,

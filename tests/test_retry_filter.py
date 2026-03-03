@@ -230,7 +230,7 @@ def test_wait_rate_limit_aware_caps_at_120():
     retry_state = MagicMock()
     retry_state.outcome.exception.return_value = exc
     result = wait(retry_state)
-    assert result == 120.0
+    assert result == 300.0
 
 
 def test_wait_rate_limit_aware_falls_back_to_exp():

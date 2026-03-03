@@ -19,7 +19,7 @@ from rich.progress import (
 from adele_runner.adapters.foundry_inference import FoundryAdapter
 from adele_runner.config import AppConfig
 from adele_runner.schemas import DatasetItem, InferenceOutput, RunManifest
-from adele_runner.utils.concurrency import bounded_gather
+from adele_runner.utils.concurrency import AsyncRateLimiter, bounded_gather
 from adele_runner.utils.io import append_jsonl, build_dedup_index, ensure_run_dir
 from adele_runner.utils.retry import make_retry_decorator
 
@@ -44,12 +44,25 @@ async def _run_foundry_async(
     outputs_path: Path,
 ) -> list[InferenceOutput]:
     """Run inference via Azure AI Foundry with async concurrency."""
-    adapter = FoundryAdapter(config)
     concurrency_cfg = config.concurrency
+
+    # Construct rate limiter if effective_rpm was computed from rate limits
+    rate_limiter: AsyncRateLimiter | None = None
+    if concurrency_cfg.effective_rpm is not None:
+        rl = config.inference.rate_limits
+        rate_limiter = AsyncRateLimiter(
+            concurrency_cfg.effective_rpm,
+            tpm=rl.tokens_per_minute if rl else None,
+        )
+        logger.info("Rate limiter enabled: %d RPM", concurrency_cfg.effective_rpm)
+
+    adapter = FoundryAdapter(config, rate_limiter=rate_limiter)
+
     retry_dec = make_retry_decorator(
         max_retries=concurrency_cfg.max_retries,
         backoff_base=concurrency_cfg.backoff_base_s,
         backoff_max=concurrency_cfg.backoff_max_s,
+        rate_limiter=rate_limiter,
     )
 
     completed: list[InferenceOutput] = []
@@ -69,7 +82,11 @@ async def _run_foundry_async(
         for chunk_start in range(0, len(pending), chunk_size):
             chunk = pending[chunk_start : chunk_start + chunk_size]
             tasks = [_infer_with_retry(adapter, item, retry_dec) for item in chunk]
-            results = await bounded_gather(tasks, max_concurrency=concurrency_cfg.max_in_flight)
+            results = await bounded_gather(
+                tasks,
+                max_concurrency=concurrency_cfg.max_in_flight,
+                rate_limiter=rate_limiter,
+            )
 
             for result in results:
                 if isinstance(result, BaseException):

@@ -216,18 +216,31 @@ def _get_response_headers(exc: BaseException) -> dict | None:
 
 
 class WaitRateLimitAware(wait_base):
-    """Use ``Retry-After`` header when available, else exponential backoff."""
+    """Use ``Retry-After`` header when available, else exponential backoff.
 
-    def __init__(self, backoff_base: float, backoff_max: float) -> None:
+    When a *rate_limiter* is provided, 429 responses also trigger a global
+    backoff via :meth:`~adele_runner.utils.concurrency.AsyncRateLimiter.signal_backoff`
+    so that *all* in-flight dispatches pause — not just the retrying task.
+    """
+
+    def __init__(
+        self,
+        backoff_base: float,
+        backoff_max: float,
+        rate_limiter: object | None = None,
+    ) -> None:
         self._exp = wait_exponential(multiplier=backoff_base, max=backoff_max)
+        self._rate_limiter = rate_limiter
 
     def __call__(self, retry_state: RetryCallState) -> float:
         exc = retry_state.outcome.exception() if retry_state.outcome else None
         if exc is not None:
             retry_after = get_retry_after(exc)
             if retry_after is not None:
-                wait_s = min(retry_after, 120.0)
+                wait_s = min(retry_after, 300.0)
                 logger.info("Using Retry-After header: waiting %.1fs", wait_s)
+                if self._rate_limiter is not None:
+                    self._rate_limiter.signal_backoff(wait_s)  # type: ignore[attr-defined]
                 return wait_s
         return self._exp(retry_state)
 
@@ -238,6 +251,7 @@ def make_retry_decorator(
     backoff_max: float = 30.0,
     retry_exceptions: tuple[type[Exception], ...] = (Exception,),
     retry_filter: Callable[[BaseException], bool] | None = None,
+    rate_limiter: object | None = None,
 ) -> Callable:
     """Return a tenacity ``retry`` decorator configured for the given params.
 
@@ -256,6 +270,10 @@ def make_retry_decorator(
     retry_filter:
         A callable ``(BaseException) -> bool`` that decides whether a given
         exception should be retried.  Defaults to :func:`is_retryable`.
+    rate_limiter:
+        An optional :class:`~adele_runner.utils.concurrency.AsyncRateLimiter`.
+        When provided, 429 Retry-After triggers a global backoff that pauses
+        all in-flight dispatches.
     """
     if retry_filter is None:
         retry_filter = is_retryable
@@ -263,7 +281,9 @@ def make_retry_decorator(
     return retry(
         retry=retry_if_exception_type(retry_exceptions) & retry_if_exception(retry_filter),
         stop=stop_after_attempt(max_retries + 1),
-        wait=WaitRateLimitAware(backoff_base=backoff_base, backoff_max=backoff_max),
+        wait=WaitRateLimitAware(
+            backoff_base=backoff_base, backoff_max=backoff_max, rate_limiter=rate_limiter
+        ),
         before_sleep=_log_retry,
         reraise=True,
     )
