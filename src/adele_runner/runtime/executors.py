@@ -37,15 +37,17 @@ class BatchTransport(Protocol):
 
 def create_rate_limiter(
     settings: ExecutionSettings,
-    rate_limits: RateLimitsConfig | None,
+    rate_limits: RateLimitsConfig | None = None,
 ) -> AsyncRateLimiter | None:
     """Create a request pacing limiter for a lane if needed."""
-    if settings.effective_rpm is None:
-        return None
-    return AsyncRateLimiter(
-        settings.effective_rpm,
-        tpm=rate_limits.tokens_per_minute if rate_limits else None,
-    )
+    if settings.request_budget is None:
+        if settings.effective_rpm is None:
+            return None
+        return AsyncRateLimiter(
+            settings.effective_rpm,
+            tpm=rate_limits.tokens_per_minute if rate_limits else None,
+        )
+    return AsyncRateLimiter(settings.request_budget)
 
 
 async def _send_with_retry(

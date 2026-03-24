@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from adele_runner.config import RateLimitsConfig
+    from adele_runner.runtime.provider_limits import BatchBudget, RequestBudget
 
 ProviderKind = Literal["azure_openai", "azure_ai_inference", "google_genai", "anthropic"]
 ExecutionKind = Literal["request_response", "batch"]
@@ -70,6 +71,16 @@ class ExecutionSettings:
     max_poll_time_s: float
     batch_completion_window: str
     effective_rpm: int | None = None
+    request_budget: RequestBudget | None = None
+    batch_budget: BatchBudget | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConcurrencySummary:
+    """Compact concurrency summary shown in dry-run output and logs."""
+
+    effective_rpm: int | None = None
+    max_in_flight: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

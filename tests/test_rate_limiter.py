@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import UTC, datetime
 
 import pytest
 
+from adele_runner.runtime.provider_limits import RequestBudget
 from adele_runner.utils.concurrency import AsyncRateLimiter, bounded_gather
 
 # ---------------------------------------------------------------------------
@@ -348,3 +350,23 @@ def test_update_token_usage_combined_with_header_pressure():
     # remaining=10% → ×3 multiplier
     assert limiter._pressure_multiplier == 3.0
     assert abs(limiter._interval - new_base * 3.0) < 1e-9
+
+
+def test_daily_budget_rolls_over_at_next_day_boundary(monkeypatch: pytest.MonkeyPatch):
+    limiter = AsyncRateLimiter(
+        RequestBudget(
+            provider_kind="google_genai",
+            requests_per_day=1,
+            estimated_input_tokens=1,
+            estimated_output_tokens=1,
+            daily_reset_timezone="UTC",
+        )
+    )
+    current = datetime(2026, 3, 24, 10, 0, tzinfo=UTC)
+    monkeypatch.setattr(limiter, "_now_utc", lambda: current)
+    limiter._reserve_daily_usage()
+    assert limiter._daily_delay_seconds() > 0
+
+    next_day = datetime(2026, 3, 25, 0, 0, 1, tzinfo=UTC)
+    monkeypatch.setattr(limiter, "_now_utc", lambda: next_day)
+    assert limiter._daily_delay_seconds() == 0

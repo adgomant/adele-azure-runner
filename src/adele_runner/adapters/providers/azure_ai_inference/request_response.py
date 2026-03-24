@@ -65,7 +65,7 @@ class AzureAIInferenceRequestResponseAdapter:
             return
         self._rate_limit_warned = True
 
-        if actual_tpm_str:
+        if actual_tpm_str and rl.tokens_per_minute is not None:
             try:
                 actual_tpm = int(actual_tpm_str)
                 if abs(actual_tpm - rl.tokens_per_minute) / max(1, rl.tokens_per_minute) > 0.2:
@@ -77,7 +77,7 @@ class AzureAIInferenceRequestResponseAdapter:
             except (ValueError, TypeError):
                 pass
 
-        if actual_rpm_str:
+        if actual_rpm_str and rl.requests_per_minute is not None:
             try:
                 actual_rpm = int(actual_rpm_str)
                 if abs(actual_rpm - rl.requests_per_minute) / max(1, rl.requests_per_minute) > 0.2:

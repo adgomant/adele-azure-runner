@@ -8,8 +8,8 @@ providers:
     api_key_env: "AZURE_OPENAI_API_KEY"
     api_version: "<API_VERSION>"
     completion_endpoint: "/chat/completions"
-    max_requests_per_file: 99000     # Azure hard limit: 100000
-    max_bytes_per_file: 190000000    # Azure hard limit: 200000000
+    max_requests_per_file: 100000    # Azure hard limit: 100000
+    max_bytes_per_file: 200000000    # Azure hard limit: 200000000
   google_genai:
     api_key_env: "GEMINI_API_KEY"
     backend: "gemini_api"            # "gemini_api" | "vertex_ai"
@@ -43,9 +43,12 @@ inference:
   temperature: 0.0
   max_tokens: 50000
   top_p: 1.0
-  # rate_limits:                    # Optional: auto-tunes concurrency for request_response
+  # rate_limits:                    # Optional request-response or batch budgets
   #   tokens_per_minute: 80000
   #   requests_per_minute: 300
+  #   concurrent_requests: 32
+  #   requests_per_day: 10000
+  #   batch_enqueued_tokens: 200000000
 
 # ── Judging ───────────────────────────────────────────────────
 judging:
@@ -57,7 +60,7 @@ judging:
       mode: "request_response"
       model: "<FOUNDRY_GPT4O_MODEL_ID>"
       # max_tokens: 512         # Max completion tokens for this judge (default: 512)
-      # rate_limits:            # Optional: request_response judge rate limits
+      # rate_limits:            # Optional request-response or batch budgets
       #   tokens_per_minute: 80000
       #   requests_per_minute: 300
     - name: "claude"
@@ -68,6 +71,8 @@ judging:
     #   provider: "azure_openai"
     #   mode: "batch"
     #   model: "gpt-4o-batch"
+    #   rate_limits:
+    #     batch_enqueued_tokens: 50000000
 
 # ── Advanced ──────────────────────────────────────────────────
 concurrency:

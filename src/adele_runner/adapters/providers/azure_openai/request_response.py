@@ -43,9 +43,9 @@ class AzureOpenAIRequestResponseAdapter:
     async def send(self, request: ChatRequest, *, timeout_s: float) -> ChatResponse:
         t0 = time.monotonic()
         try:
-            response = await asyncio.wait_for(
+            raw_response = await asyncio.wait_for(
                 asyncio.to_thread(
-                    self._client.chat.completions.create,
+                    self._client.with_raw_response.chat.completions.create,
                     model=request.model,
                     messages=[
                         {"role": message.role, "content": message.content}
@@ -57,6 +57,9 @@ class AzureOpenAIRequestResponseAdapter:
                 ),
                 timeout=timeout_s,
             )
+            if self._rate_limiter is not None:
+                self._rate_limiter.update_from_headers(dict(raw_response.headers))  # type: ignore[attr-defined]
+            response = raw_response.parse()
         except TimeoutError:
             logger.error(
                 "Azure OpenAI request timed out for request_id=%s after %.1fs",

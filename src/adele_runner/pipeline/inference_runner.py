@@ -88,7 +88,7 @@ async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[Inf
             on_result=_record_response,
         )
     else:
-        rate_limiter = create_rate_limiter(settings, target.rate_limits)
+        rate_limiter = create_rate_limiter(settings)
         adapter = binding.create_adapter(
             config,
             rate_limiter=rate_limiter,

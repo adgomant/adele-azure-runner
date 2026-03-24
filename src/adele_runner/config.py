@@ -22,8 +22,23 @@ _AZURE_BATCH_DEPLOYMENT_TYPES = {"global_batch", "data_zone_batch"}
 class RateLimitsConfig(BaseModel):
     """Rate limits for a provider target."""
 
-    tokens_per_minute: int
-    requests_per_minute: int
+    tokens_per_minute: int | None = None
+    requests_per_minute: int | None = None
+    input_tokens_per_minute: int | None = None
+    output_tokens_per_minute: int | None = None
+    requests_per_day: int | None = None
+    tokens_per_day: int | None = None
+    concurrent_requests: int | None = None
+    batch_requests_per_minute: int | None = None
+    batch_queue_requests: int | None = None
+    batch_enqueued_tokens: int | None = None
+
+    @field_validator("*")
+    @classmethod
+    def _validate_positive_limits(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("rate limit values must be >= 1")
+        return value
 
 
 class AzureOpenAIConnection(BaseModel):
@@ -31,8 +46,8 @@ class AzureOpenAIConnection(BaseModel):
     api_key_env: str = "AZURE_OPENAI_API_KEY"
     api_version: str = ""
     completion_endpoint: str = "/chat/completions"
-    max_requests_per_file: int = 50_000
-    max_bytes_per_file: int = 100_000_000
+    max_requests_per_file: int = 100_000
+    max_bytes_per_file: int = 200_000_000
 
 
 class AzureAIInferenceConnection(BaseModel):
@@ -144,16 +159,35 @@ def compute_concurrency_from_rate_limits(
     max_tokens: int,
 ) -> ConcurrencyConfig:
     """Compute optimal concurrency parameters from rate limits."""
-    tpm = rate_limits.tokens_per_minute
-    rpm = rate_limits.requests_per_minute
-
     est_tokens_per_request = max(1, max_tokens)
-    rpm_from_tpm = tpm / est_tokens_per_request
-    effective_rpm = min(rpm, rpm_from_tpm)
+    est_input_tokens = est_tokens_per_request
+    est_output_tokens = est_tokens_per_request
+
+    rpm_candidates: list[float] = []
+    if rate_limits.requests_per_minute is not None:
+        rpm_candidates.append(float(rate_limits.requests_per_minute))
+    if rate_limits.tokens_per_minute is not None:
+        rpm_candidates.append(rate_limits.tokens_per_minute / est_tokens_per_request)
+    if rate_limits.input_tokens_per_minute is not None:
+        rpm_candidates.append(rate_limits.input_tokens_per_minute / est_input_tokens)
+    if rate_limits.output_tokens_per_minute is not None:
+        rpm_candidates.append(rate_limits.output_tokens_per_minute / est_output_tokens)
+    if rate_limits.requests_per_day is not None:
+        rpm_candidates.append(rate_limits.requests_per_day / 1440.0)
+    if rate_limits.tokens_per_day is not None:
+        rpm_candidates.append(rate_limits.tokens_per_day / (est_tokens_per_request * 1440.0))
+
+    effective_rpm = min(rpm_candidates) if rpm_candidates else None
     avg_duration_s = max(2.0, min(300.0, max_tokens / 200))
-    max_in_flight = max(1, int(effective_rpm * avg_duration_s / 60 * 0.8))
+    if effective_rpm is None:
+        max_in_flight = rate_limits.concurrent_requests or 1
+    else:
+        max_in_flight = max(1, int(effective_rpm * avg_duration_s / 60 * 0.8))
+    if rate_limits.concurrent_requests is not None:
+        max_in_flight = min(max_in_flight, rate_limits.concurrent_requests)
     request_timeout_s = round(max(30.0, min(600.0, max_tokens / 50 + 10)), 1)
-    backoff_base_s = round(max(0.5, min(10.0, 60.0 / max(1, effective_rpm))), 1)
+    derived_rpm = max(1.0, effective_rpm or 1.0)
+    backoff_base_s = round(max(0.5, min(10.0, 60.0 / derived_rpm)), 1)
     backoff_max_s = round(max(30.0, min(120.0, backoff_base_s * 10)), 1)
 
     return ConcurrencyConfig(
@@ -161,7 +195,7 @@ def compute_concurrency_from_rate_limits(
         request_timeout_s=request_timeout_s,
         backoff_base_s=backoff_base_s,
         backoff_max_s=backoff_max_s,
-        effective_rpm=max(1, int(effective_rpm)),
+        effective_rpm=max(1, int(effective_rpm)) if effective_rpm is not None else None,
     )
 
 
@@ -206,7 +240,13 @@ class AppConfig(BaseModel):
         ]
         if not limits:
             return None
-        return min(limits, key=lambda rate_limits: rate_limits.tokens_per_minute)
+        return min(
+            limits,
+            key=lambda rate_limits: rate_limits.tokens_per_minute
+            or rate_limits.input_tokens_per_minute
+            or rate_limits.requests_per_minute
+            or 0,
+        )
 
     def get_max_judge_max_tokens(self) -> int:
         values = [judge.max_tokens for judge in self.judging.judges if judge.mode == "request_response"]
@@ -324,6 +364,21 @@ class AppConfig(BaseModel):
                 errors,
                 context=f"Judge '{judge.name}'",
             )
+            self._validate_rate_limit_fields(
+                judge.provider,
+                judge.mode,
+                judge.rate_limits,
+                errors,
+                context=f"Judge '{judge.name}'",
+            )
+
+        self._validate_rate_limit_fields(
+            self.inference.provider,
+            self.inference.mode,
+            self.inference.rate_limits,
+            errors,
+            context="Inference",
+        )
 
         from adele_runner.utils.batch_split import (
             AZURE_BATCH_MAX_FILE_BYTES,
@@ -347,6 +402,34 @@ class AppConfig(BaseModel):
             )
 
         return errors
+
+    def _validate_rate_limit_fields(
+        self,
+        provider: ProviderKind,
+        mode: ExecutionMode,
+        rate_limits: RateLimitsConfig | None,
+        errors: list[str],
+        *,
+        context: str,
+    ) -> None:
+        if rate_limits is None:
+            return
+
+        if provider == "anthropic" and mode == "batch":
+            if (
+                rate_limits.batch_requests_per_minute is not None
+                and rate_limits.batch_requests_per_minute > 50
+            ):
+                errors.append(
+                    f"{context}: anthropic batch_requests_per_minute exceeds Anthropic limit (50)."
+                )
+            if (
+                rate_limits.batch_queue_requests is not None
+                and rate_limits.batch_queue_requests > 100_000
+            ):
+                errors.append(
+                    f"{context}: anthropic batch_queue_requests exceeds Anthropic limit (100000)."
+                )
 
     def run_dir(self) -> Path:
         return Path(self.run.output_dir) / self.run.run_id

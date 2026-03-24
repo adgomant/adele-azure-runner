@@ -50,6 +50,7 @@ Batch is supported for:
 - `backend: vertex_ai`
 
 `vertex_ai` requires `project` and `location`.
+When `backend: vertex_ai` is used with Gemini models, the runner treats batch capacity as Dynamic Shared Quota and stays reactive unless you configure explicit batch budgets.
 
 ### Anthropic
 
@@ -120,6 +121,17 @@ Azure OpenAI file splitting uses:
 ```yaml
 providers:
   azure_openai:
-    max_requests_per_file: 50000
-    max_bytes_per_file: 100000000
+    max_requests_per_file: 100000
+    max_bytes_per_file: 200000000
+```
+
+Batch lanes can also use `rate_limits` for provider queue budgets:
+
+```yaml
+inference:
+  provider: google_genai
+  mode: batch
+  model: gemini-2.5-flash
+  rate_limits:
+    batch_enqueued_tokens: 3000000
 ```

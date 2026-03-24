@@ -92,5 +92,19 @@ def test_valid_prompt_templates():
 
 def test_batch_limits_default_values():
     cfg = _cfg()
-    assert cfg.providers.azure_openai.max_requests_per_file == 50_000
-    assert cfg.providers.azure_openai.max_bytes_per_file == 100_000_000
+    assert cfg.providers.azure_openai.max_requests_per_file == 100_000
+    assert cfg.providers.azure_openai.max_bytes_per_file == 200_000_000
+
+
+def test_anthropic_batch_limits_reject_excess_queue_budget():
+    cfg = _cfg(
+        inference={
+            "provider": "anthropic",
+            "mode": "batch",
+            "model": "claude-sonnet-4-5",
+            "rate_limits": {"batch_queue_requests": 100_001},
+        },
+        judging={"enabled": False},
+    )
+    errors = cfg.validate_config()
+    assert any("batch_queue_requests" in error for error in errors)

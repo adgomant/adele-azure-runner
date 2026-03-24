@@ -67,6 +67,12 @@ class AzureOpenAIBatchAdapter:
             )
         return lines
 
+    def _estimate_request_tokens(self, request: ChatRequest) -> int:
+        prompt_chars = sum(len(message.content) for message in request.messages)
+        prompt_estimate = max(1, prompt_chars // 4)
+        completion_estimate = max(1, request.max_tokens or 0)
+        return prompt_estimate + completion_estimate
+
     def run_batch(
         self,
         requests: list[ChatRequest],
@@ -77,15 +83,35 @@ class AzureOpenAIBatchAdapter:
 
         jsonl_lines = self._build_batch_lines(requests)
         batch_cfg = self._cfg.providers.azure_openai
+        batch_budget = settings.batch_budget
+        max_requests = batch_cfg.max_requests_per_file
+        max_bytes = batch_cfg.max_bytes_per_file
+        max_tokens = None
+        if batch_budget is not None:
+            if batch_budget.max_requests_per_batch is not None:
+                max_requests = min(max_requests, batch_budget.max_requests_per_batch)
+            if batch_budget.max_bytes_per_batch is not None:
+                max_bytes = min(max_bytes, batch_budget.max_bytes_per_batch)
+            max_tokens = batch_budget.batch_enqueued_tokens
         chunks = split_batch_requests(
             jsonl_lines,
-            max_requests=batch_cfg.max_requests_per_file,
-            max_bytes=batch_cfg.max_bytes_per_file,
+            max_requests=max_requests,
+            max_bytes=max_bytes,
+            token_estimates=[self._estimate_request_tokens(request) for request in requests],
+            max_tokens=max_tokens,
         )
         request_map = {request.request_id: request for request in requests}
         all_outputs: list[ChatResponse] = []
+        submit_interval_s = 0.0
+        if batch_budget is not None and batch_budget.batch_requests_per_minute:
+            submit_interval_s = 60.0 / batch_budget.batch_requests_per_minute
+        last_submit_at = 0.0
 
         for chunk_idx, chunk in enumerate(chunks):
+            if submit_interval_s > 0 and last_submit_at > 0:
+                elapsed = time.monotonic() - last_submit_at
+                if elapsed < submit_interval_s:
+                    time.sleep(submit_interval_s - elapsed)
             suffix = f"_{chunk_idx}" if len(chunks) > 1 else ""
             input_path = run_dir / f"batch_input{suffix}.jsonl"
             input_path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +119,7 @@ class AzureOpenAIBatchAdapter:
                 for line in chunk:
                     fh.write(line + "\n")
 
+            last_submit_at = time.monotonic()
             chunk_outputs = self._submit_and_poll(input_path, request_map, settings)
             all_outputs.extend(chunk_outputs)
 

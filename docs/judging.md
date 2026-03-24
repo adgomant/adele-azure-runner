@@ -84,7 +84,7 @@ The judge pipeline runs request-response and batch lanes concurrently when both 
 
 ## Rate Limits
 
-Judge `rate_limits` only affect request-response lanes. Batch judges do not use per-request pacing.
+Judge `rate_limits` auto-tune request-response pacing and can also define batch queue budgets such as `batch_queue_requests` and `batch_enqueued_tokens`.
 
 ## Dedup
 

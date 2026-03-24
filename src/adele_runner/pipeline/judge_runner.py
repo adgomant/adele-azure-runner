@@ -36,7 +36,7 @@ async def _run_request_response_judges(
         target = plan.target
         binding = plan.binding
         settings = plan.settings
-        rate_limiter = create_rate_limiter(settings, target.rate_limits)
+        rate_limiter = create_rate_limiter(settings)
         adapter = binding.create_adapter(
             config,
             rate_limiter=rate_limiter,

@@ -52,9 +52,16 @@ class AnthropicRequestResponseAdapter:
 
         t0 = time.monotonic()
         try:
+            create_fn = self._client.messages.create
+            parse_response = False
+            raw_messages = getattr(self._client.messages, "with_raw_response", None)
+            if raw_messages is not None:
+                create_fn = raw_messages.create
+                parse_response = True
+
             response = await asyncio.wait_for(
                 asyncio.to_thread(
-                    self._client.messages.create,
+                    create_fn,
                     model=request.model,
                     system="\n\n".join(system_parts) or None,
                     messages=message_payload,
@@ -64,6 +71,10 @@ class AnthropicRequestResponseAdapter:
                 ),
                 timeout=timeout_s,
             )
+            if parse_response and self._rate_limiter is not None:
+                self._rate_limiter.update_from_headers(dict(response.headers))  # type: ignore[attr-defined]
+            if parse_response:
+                response = response.parse()
         except TimeoutError:
             logger.error(
                 "Anthropic request timed out for request_id=%s after %.1fs",

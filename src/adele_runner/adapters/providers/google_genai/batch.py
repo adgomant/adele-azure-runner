@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from adele_runner.runtime.types import (
     ChatResponse,
     ExecutionSettings,
 )
+from adele_runner.utils.batch_split import split_items_by_limits
 
 logger = logging.getLogger(__name__)
 
@@ -51,21 +53,66 @@ class GoogleGenAIBatchAdapter:
         settings: ExecutionSettings,
     ) -> list[ChatResponse]:
         _ = run_dir
-        job = self._create_batch_job(requests)
-        poll_start = time.monotonic()
+        batch_budget = settings.batch_budget
+        chunks = split_items_by_limits(
+            requests,
+            size_getter=self._estimate_request_bytes,
+            token_getter=self._estimate_request_tokens,
+            max_items=batch_budget.batch_queue_requests if batch_budget else None,
+            max_bytes=batch_budget.max_bytes_per_batch if batch_budget else None,
+            max_tokens=batch_budget.batch_enqueued_tokens if batch_budget else None,
+        )
+        outputs: list[ChatResponse] = []
+        submit_interval_s = 0.0
+        if batch_budget is not None and batch_budget.batch_requests_per_minute:
+            submit_interval_s = 60.0 / batch_budget.batch_requests_per_minute
+        last_submit_at = 0.0
 
-        while True:
-            state = self._status_name(job)
-            if state in {"SUCCEEDED", "COMPLETED"}:
-                break
-            if state in {"FAILED", "CANCELLED", "EXPIRED"}:
-                raise RuntimeError(f"Google batch job ended with status: {state}")
-            if time.monotonic() - poll_start > settings.max_poll_time_s:
-                raise TimeoutError(f"Google batch polling exceeded {settings.max_poll_time_s}s.")
-            time.sleep(_POLL_INTERVAL_S)
-            job = self._refresh_batch_job(job)
+        for chunk in chunks:
+            if submit_interval_s > 0 and last_submit_at > 0:
+                elapsed = time.monotonic() - last_submit_at
+                if elapsed < submit_interval_s:
+                    time.sleep(submit_interval_s - elapsed)
+            last_submit_at = time.monotonic()
 
-        return self._extract_results(job, requests)
+            job = self._create_batch_job(chunk)
+            poll_start = time.monotonic()
+
+            while True:
+                state = self._status_name(job)
+                if state in {"SUCCEEDED", "COMPLETED"}:
+                    break
+                if state in {"FAILED", "CANCELLED", "EXPIRED"}:
+                    raise RuntimeError(f"Google batch job ended with status: {state}")
+                if time.monotonic() - poll_start > settings.max_poll_time_s:
+                    raise TimeoutError(f"Google batch polling exceeded {settings.max_poll_time_s}s.")
+                time.sleep(_POLL_INTERVAL_S)
+                job = self._refresh_batch_job(job)
+
+            outputs.extend(self._extract_results(job, chunk))
+
+        return outputs
+
+    def _estimate_request_tokens(self, request: ChatRequest) -> int:
+        prompt_chars = sum(len(message.content) for message in request.messages)
+        return max(1, prompt_chars // 4) + max(1, request.max_tokens or 0)
+
+    def _estimate_request_bytes(self, request: ChatRequest) -> int:
+        payload = {
+            "key": request.request_id,
+            "request": {
+                "contents": [
+                    {"role": message.role, "parts": [{"text": message.content}]}
+                    for message in request.messages
+                ],
+                "generationConfig": {
+                    "temperature": request.temperature,
+                    "topP": request.top_p,
+                    "maxOutputTokens": request.max_tokens,
+                },
+            },
+        }
+        return len(json.dumps(payload).encode("utf-8"))
 
     def _create_batch_job(self, requests: list[ChatRequest]) -> Any:
         payload = [

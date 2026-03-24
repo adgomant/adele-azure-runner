@@ -1,18 +1,76 @@
-"""Batch request splitting to respect Azure Batch API limits."""
+"""Provider-agnostic batch request splitting."""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from typing import TypeVar
+
+from adele_runner.runtime.provider_limits import (
+    ANTHROPIC_BATCH_MAX_BYTES,
+    ANTHROPIC_BATCH_MAX_REQUESTS,
+    AZURE_BATCH_MAX_FILE_BYTES,
+    AZURE_BATCH_MAX_REQUESTS,
+    GOOGLE_GEMINI_BATCH_MAX_BYTES,
+)
 
 logger = logging.getLogger(__name__)
 
-# Azure hard limits (absolute maximums enforced by the service).
-AZURE_BATCH_MAX_REQUESTS = 100_000
-AZURE_BATCH_MAX_FILE_BYTES = 200_000_000  # 200 MB
+T = TypeVar("T")
 
-# Conservative defaults used by config when no override is provided.
-DEFAULT_MAX_REQUESTS_PER_FILE = 50_000
-DEFAULT_MAX_BYTES_PER_FILE = 100_000_000  # 100 MB
+DEFAULT_MAX_REQUESTS_PER_FILE = AZURE_BATCH_MAX_REQUESTS
+DEFAULT_MAX_BYTES_PER_FILE = AZURE_BATCH_MAX_FILE_BYTES
+
+
+def split_items_by_limits(
+    items: list[T],
+    *,
+    size_getter: Callable[[T], int],
+    token_getter: Callable[[T], int] | None = None,
+    max_items: int | None = None,
+    max_bytes: int | None = None,
+    max_tokens: int | None = None,
+) -> list[list[T]]:
+    """Split items into chunks respecting item-count, byte, and token limits."""
+    if not items:
+        return []
+
+    chunks: list[list[T]] = []
+    current_chunk: list[T] = []
+    current_bytes = 0
+    current_tokens = 0
+
+    for item in items:
+        item_bytes = size_getter(item)
+        item_tokens = token_getter(item) if token_getter is not None else 0
+
+        exceeds_items = max_items is not None and len(current_chunk) >= max_items
+        exceeds_bytes = max_bytes is not None and current_bytes + item_bytes > max_bytes
+        exceeds_tokens = max_tokens is not None and current_tokens + item_tokens > max_tokens
+        if current_chunk and (exceeds_items or exceeds_bytes or exceeds_tokens):
+            chunks.append(current_chunk)
+            current_chunk = []
+            current_bytes = 0
+            current_tokens = 0
+
+        current_chunk.append(item)
+        current_bytes += item_bytes
+        current_tokens += item_tokens
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    if len(chunks) > 1:
+        logger.info(
+            "Split %d items into %d batch chunks (max_items=%s, max_bytes=%s, max_tokens=%s)",
+            len(items),
+            len(chunks),
+            max_items,
+            max_bytes,
+            max_tokens,
+        )
+
+    return chunks
 
 
 def split_batch_requests(
@@ -20,47 +78,30 @@ def split_batch_requests(
     *,
     max_requests: int = DEFAULT_MAX_REQUESTS_PER_FILE,
     max_bytes: int = DEFAULT_MAX_BYTES_PER_FILE,
+    token_estimates: list[int] | None = None,
+    max_tokens: int | None = None,
 ) -> list[list[str]]:
-    """Split JSONL *lines* into chunks respecting count and size limits.
+    """Split serialized JSONL lines respecting provider limits."""
+    estimated_tokens = token_estimates or [0] * len(lines)
+    chunks = split_items_by_limits(
+        list(zip(lines, estimated_tokens, strict=False)),
+        size_getter=lambda item: len(item[0].encode("utf-8")) + 1,
+        token_getter=lambda item: item[1],
+        max_items=max_requests,
+        max_bytes=max_bytes,
+        max_tokens=max_tokens,
+    )
+    return [[line for line, _tokens in chunk] for chunk in chunks]
 
-    Each element of *lines* should be a complete JSONL line (without trailing
-    newline).  Returns a list of chunks where each chunk fits within both
-    *max_requests* and *max_bytes* (accounting for a newline per line).
 
-    A single oversized line (>= *max_bytes*) is placed in its own chunk so the
-    rest of the batch is not blocked.
-    """
-    if not lines:
-        return []
-
-    chunks: list[list[str]] = []
-    current_chunk: list[str] = []
-    current_bytes = 0
-
-    for line in lines:
-        line_bytes = len(line.encode("utf-8")) + 1  # +1 for newline
-
-        # Start a new chunk when adding this line would exceed limits
-        if current_chunk and (
-            len(current_chunk) >= max_requests or current_bytes + line_bytes > max_bytes
-        ):
-            chunks.append(current_chunk)
-            current_chunk = []
-            current_bytes = 0
-
-        current_chunk.append(line)
-        current_bytes += line_bytes
-
-    if current_chunk:
-        chunks.append(current_chunk)
-
-    if len(chunks) > 1:
-        logger.info(
-            "Split %d requests into %d batch chunks (max_requests=%d, max_bytes=%d)",
-            len(lines),
-            len(chunks),
-            max_requests,
-            max_bytes,
-        )
-
-    return chunks
+__all__ = [
+    "ANTHROPIC_BATCH_MAX_BYTES",
+    "ANTHROPIC_BATCH_MAX_REQUESTS",
+    "AZURE_BATCH_MAX_FILE_BYTES",
+    "AZURE_BATCH_MAX_REQUESTS",
+    "DEFAULT_MAX_BYTES_PER_FILE",
+    "DEFAULT_MAX_REQUESTS_PER_FILE",
+    "GOOGLE_GEMINI_BATCH_MAX_BYTES",
+    "split_batch_requests",
+    "split_items_by_limits",
+]

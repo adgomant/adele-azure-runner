@@ -137,6 +137,16 @@ def test_build_execution_settings_with_explicit_max_tokens():
     assert settings.max_in_flight >= 1
 
 
+def test_compute_concurrency_clamps_to_concurrent_requests():
+    rl = RateLimitsConfig(
+        tokens_per_minute=500_000,
+        requests_per_minute=1_000,
+        concurrent_requests=7,
+    )
+    cc = compute_concurrency_from_rate_limits(rl, max_tokens=2048)
+    assert cc.max_in_flight == 7
+
+
 # ---------------------------------------------------------------------------
 # get_max_judge_max_tokens
 # ---------------------------------------------------------------------------

@@ -45,8 +45,8 @@ Supports `request_response` only.
 | `api_key_env` | `str` | `AZURE_OPENAI_API_KEY` |
 | `api_version` | `str` | `""` |
 | `completion_endpoint` | `str` | `/chat/completions` |
-| `max_requests_per_file` | `int` | `50000` |
-| `max_bytes_per_file` | `int` | `100000000` |
+| `max_requests_per_file` | `int` | `100000` |
+| `max_bytes_per_file` | `int` | `200000000` |
 
 Supports `request_response` and `batch`, but batch requires target capability hints.
 
@@ -108,6 +108,21 @@ This is especially important for `azure_openai` batch validation.
 
 `mode=auto` resolves within the chosen provider, not across providers.
 
+`rate_limits` supports both the legacy minute budgets and provider-specific extensions:
+
+- `tokens_per_minute`
+- `requests_per_minute`
+- `input_tokens_per_minute`
+- `output_tokens_per_minute`
+- `requests_per_day`
+- `tokens_per_day`
+- `concurrent_requests`
+- `batch_requests_per_minute`
+- `batch_queue_requests`
+- `batch_enqueued_tokens`
+
+For `google_genai` with `backend: gemini_api`, daily budgets such as `requests_per_day` follow the Gemini API reset window at midnight Pacific time.
+
 ## `concurrency`
 
 | Field | Type | Default |
@@ -141,7 +156,7 @@ Each judge:
 | `rate_limits` | `object \| null` | `null` |
 | `max_tokens` | `int` | `512` |
 
-`rate_limits` apply only to request-response judge lanes.
+Request-response judges use `rate_limits` for adaptive pacing. Batch judges use the same block for queue and enqueued-token budgets when configured.
 
 ## Environment Variables
 
@@ -168,10 +183,12 @@ Use `--dry-run` to validate a plan without making API calls.
 
 ## Rate-Limit Auto-Tuning
 
-When request-response `rate_limits` are set, the runner computes stage-local execution settings from:
+When request-response `rate_limits` are set, the runner computes stage-local execution settings from the tightest configured budget, including:
 
-- TPM
-- RPM
+- TPM / RPM
+- input and output TPM
+- requests or tokens per day
+- `concurrent_requests`
 - `max_tokens`
 
 That affects:
@@ -181,7 +198,7 @@ That affects:
 - `request_timeout_s`
 - retry backoff
 
-Batch lanes do not use request-response rate limiting.
+Batch lanes use provider-specific file or payload splitting plus optional queue budgets such as `batch_queue_requests` and `batch_enqueued_tokens`.
 
 ## Example
 
@@ -223,6 +240,8 @@ judging:
       provider: anthropic
       mode: batch
       model: claude-sonnet-4-5
+      rate_limits:
+        batch_queue_requests: 50000
 ```
 
 ## Breaking Change

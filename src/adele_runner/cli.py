@@ -298,9 +298,25 @@ def _print_dry_run(
     # Concurrency info (especially useful when rate-limit auto-tuning is active)
     rl = cfg.inference.rate_limits
     if rl is not None:
-        console.print(
-            f"  Rate limits:    TPM={rl.tokens_per_minute:,}  RPM={rl.requests_per_minute:,}"
+        limit_parts: list[str] = []
+        field_labels = (
+            ("tokens_per_minute", "TPM"),
+            ("requests_per_minute", "RPM"),
+            ("input_tokens_per_minute", "ITPM"),
+            ("output_tokens_per_minute", "OTPM"),
+            ("requests_per_day", "RPD"),
+            ("tokens_per_day", "TPD"),
+            ("concurrent_requests", "CONC"),
+            ("batch_requests_per_minute", "BRPM"),
+            ("batch_queue_requests", "BQUEUE"),
+            ("batch_enqueued_tokens", "BENQ"),
         )
+        for field_name, label in field_labels:
+            value = getattr(rl, field_name)
+            if value is not None:
+                limit_parts.append(f"{label}={value:,}")
+        if limit_parts:
+            console.print(f"  Rate limits:    {'  '.join(limit_parts)}")
     judge_plans = resolve_judge_plans(cfg) if cfg.judging.enabled else []
     judge_request_limits = [
         plan.target.rate_limits
@@ -318,6 +334,19 @@ def _print_dry_run(
         f"timeout={cc.request_timeout_s:.0f}s  "
         f"backoff={cc.backoff_base_s:.1f}–{cc.backoff_max_s:.1f}s"
     )
+    if execution_settings is not None and execution_settings.batch_budget is not None:
+        batch_budget = execution_settings.batch_budget
+        budget_parts = []
+        if batch_budget.max_requests_per_batch is not None:
+            budget_parts.append(f"max_requests={batch_budget.max_requests_per_batch:,}")
+        if batch_budget.max_bytes_per_batch is not None:
+            budget_parts.append(f"max_bytes={batch_budget.max_bytes_per_batch:,}")
+        if batch_budget.batch_queue_requests is not None:
+            budget_parts.append(f"queue_requests={batch_budget.batch_queue_requests:,}")
+        if batch_budget.batch_enqueued_tokens is not None:
+            budget_parts.append(f"enqueued_tokens={batch_budget.batch_enqueued_tokens:,}")
+        if budget_parts:
+            console.print(f"  Batch budget:   {'  '.join(budget_parts)}")
 
     console.print("[bold cyan]--- (no API calls made) ---[/bold cyan]\n")
 

@@ -110,8 +110,8 @@ def test_both_limits_respected():
 def test_default_constants():
     assert AZURE_BATCH_MAX_REQUESTS == 100_000
     assert AZURE_BATCH_MAX_FILE_BYTES == 200_000_000
-    assert DEFAULT_MAX_REQUESTS_PER_FILE == 50_000
-    assert DEFAULT_MAX_BYTES_PER_FILE == 100_000_000
+    assert DEFAULT_MAX_REQUESTS_PER_FILE == 100_000
+    assert DEFAULT_MAX_BYTES_PER_FILE == 200_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -124,3 +124,15 @@ def test_preserves_order():
     chunks = split_batch_requests(lines, max_requests=3, max_bytes=10**9)
     flat = [line for chunk in chunks for line in chunk]
     assert flat == lines
+
+
+def test_split_by_enqueued_tokens():
+    lines = [f'{{"id": "{i}"}}' for i in range(6)]
+    chunks = split_batch_requests(
+        lines,
+        max_requests=10,
+        max_bytes=10**9,
+        token_estimates=[50, 50, 50, 50, 50, 50],
+        max_tokens=120,
+    )
+    assert [len(chunk) for chunk in chunks] == [2, 2, 2]
