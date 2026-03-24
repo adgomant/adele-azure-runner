@@ -195,7 +195,7 @@ uv run adele-runner run-all [OPTIONS]
 |---|---|---|---|
 | `--config` | `-c` | `PATH` | Path to YAML config |
 | `--model` | `-m` | `TEXT` | Model name or deployment |
-| `--mode` | | `TEXT` | Inference mode: `foundry`, `batch`, or `auto` |
+| `--mode` | | `TEXT` | Inference mode: `foundry`, `batch`, `google`, or `auto` |
 | `--tpm` | | `INT` | Tokens per minute rate limit (requires `--rpm`) |
 | `--rpm` | | `INT` | Requests per minute rate limit (requires `--tpm`) |
 | `--judge` | `-j` | `TEXT` | Judge model. Repeatable. See [Judge flag format](#judge-flag-format) |

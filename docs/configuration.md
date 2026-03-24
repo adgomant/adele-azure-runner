@@ -216,7 +216,7 @@ When `inference.rate_limits` is set and `inference.mode` resolves to `foundry` o
 
 When foundry judges have `rate_limits` configured, the runner uses the **most restrictive** judge's rate limits to tune concurrency before the judging phase. The **largest** `max_tokens` among configured foundry judges is used for auto-tuning (worst-case token consumption). The default is `512` if no custom value is set.
 
-Since inference and judging run sequentially, concurrency parameters are recomputed between phases.
+At runtime, inference and judging each resolve their own `ExecutionSettings`. The runner no longer rewrites shared `config.concurrency` between phases; it computes phase-local settings from the config when each stage starts.
 
 Non-rate-limit params (`max_retries`, `max_poll_time_s`, `batch_completion_window`) are preserved from the user config.
 

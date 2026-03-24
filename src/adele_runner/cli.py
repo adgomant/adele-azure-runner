@@ -13,6 +13,11 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from adele_runner.config import AppConfig, JudgeConfig, RateLimitsConfig, load_config
+from adele_runner.runtime.resolution import (
+    resolve_inference_execution_settings,
+    resolve_judge_request_response_settings,
+)
+from adele_runner.runtime.types import ExecutionSettings
 from adele_runner.schemas import InferenceOutput
 
 # Valid inference mode values for CLI --mode flag.
@@ -224,7 +229,12 @@ def _load_ground_truths(cfg: AppConfig) -> dict[str, str]:
     return gt_map
 
 
-def _print_dry_run(cfg: AppConfig, *, items_count: int | None = None) -> None:
+def _print_dry_run(
+    cfg: AppConfig,
+    *,
+    items_count: int | None = None,
+    execution_settings: ExecutionSettings | None = None,
+) -> None:
     """Print a dry-run summary and exit."""
     from adele_runner.utils.io import build_dedup_index
 
@@ -273,7 +283,7 @@ def _print_dry_run(cfg: AppConfig, *, items_count: int | None = None) -> None:
         console.print(
             f"  Judge limits:   TPM={judge_rl.tokens_per_minute:,}  RPM={judge_rl.requests_per_minute:,}"
         )
-    cc = cfg.concurrency
+    cc = execution_settings or cfg.concurrency
     console.print(
         f"  Concurrency:    max_in_flight={cc.max_in_flight}  "
         f"timeout={cc.request_timeout_s:.0f}s  "
@@ -306,8 +316,6 @@ def run_inference(
     cfg = _get_config(config)
     _setup_logging(cfg.logging.level)
     apply_cli_overrides(cfg, run_id=_cli_run_id, mode=mode, model=model, tpm=tpm, rpm=rpm)
-    if cfg.resolve_inference_mode() in {"foundry", "google"}:
-        cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, cfg.inference.max_tokens)
 
     items = load_adele(
         hf_id=cfg.dataset.hf_id,
@@ -316,7 +324,11 @@ def run_inference(
     )
 
     if dry_run:
-        _print_dry_run(cfg, items_count=len(items))
+        _print_dry_run(
+            cfg,
+            items_count=len(items),
+            execution_settings=resolve_inference_execution_settings(cfg),
+        )
         return
 
     _validate_or_exit(cfg)
@@ -345,9 +357,6 @@ def run_judge(
     cfg = _get_config(config)
     _setup_logging(cfg.logging.level)
     apply_cli_overrides(cfg, run_id=_cli_run_id, judges=judge, judge_template=judge_template)
-    judge_rl = cfg.get_most_restrictive_judge_rate_limits()
-    if judge_rl is not None:
-        cfg.apply_rate_limit_overrides(judge_rl, max_tokens=cfg.get_max_judge_max_tokens())
 
     outputs_path = cfg.outputs_path()
     if not outputs_path.exists():
@@ -359,7 +368,11 @@ def run_judge(
     inference_outputs = read_jsonl(outputs_path, InferenceOutput)
 
     if dry_run:
-        _print_dry_run(cfg, items_count=len(inference_outputs))
+        _print_dry_run(
+            cfg,
+            items_count=len(inference_outputs),
+            execution_settings=resolve_judge_request_response_settings(cfg),
+        )
         return
 
     _validate_or_exit(cfg)
@@ -440,10 +453,6 @@ def run_all(
         rpm=rpm,
     )
 
-    # Apply inference rate-limit overrides for async providers
-    if cfg.resolve_inference_mode() in {"foundry", "google"}:
-        cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, cfg.inference.max_tokens)
-
     items = load_adele(
         hf_id=cfg.dataset.hf_id,
         split=cfg.dataset.split,
@@ -451,7 +460,11 @@ def run_all(
     )
 
     if dry_run:
-        _print_dry_run(cfg, items_count=len(items))
+        _print_dry_run(
+            cfg,
+            items_count=len(items),
+            execution_settings=resolve_inference_execution_settings(cfg),
+        )
         return
 
     _validate_or_exit(cfg)
@@ -462,9 +475,6 @@ def run_all(
 
     # 2. Judging (re-tune concurrency for judge rate limits)
     if cfg.judging.enabled:
-        judge_rl = cfg.get_most_restrictive_judge_rate_limits()
-        if judge_rl is not None:
-            cfg.apply_rate_limit_overrides(judge_rl, max_tokens=cfg.get_max_judge_max_tokens())
         inference_outputs = read_jsonl(cfg.outputs_path(), InferenceOutput)
         ground_truths = _load_ground_truths(cfg)
         asyncio.run(_run_judge(cfg, inference_outputs, ground_truths))

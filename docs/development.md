@@ -29,8 +29,23 @@ src/adele_runner/
 
   adapters/
     __init__.py
-    foundry_inference.py      # Azure AI Foundry async inference adapter
-    azure_openai_batch.py     # Azure OpenAI Batch API adapter
+    foundry.py                # Azure AI Foundry request-response transport
+    google_genai.py           # Google Gemini request-response transport
+    azure_openai.py           # Azure OpenAI batch transport
+    factory.py                # Adapter construction helpers
+    foundry_inference.py      # Compatibility shim for older imports
+    azure_openai_batch.py     # Compatibility shim for older imports
+
+  runtime/
+    __init__.py
+    types.py                  # Internal transport contracts and resolved targets
+    resolution.py             # Config → internal adapter/execution targets
+    executors.py              # Shared request-response and batch executors
+
+  stages/
+    __init__.py
+    inference.py              # Build inference requests and map responses
+    judging.py                # Judge prompts, parsing, and output mapping
 
   datasets/
     __init__.py
@@ -38,8 +53,8 @@ src/adele_runner/
 
   pipeline/
     __init__.py
-    inference_runner.py       # Inference orchestration: dedup, dispatch, checkpoint
-    judge_runner.py           # Multi-judge evaluation: prompts, parsing, batch+foundry
+    inference_runner.py       # Thin orchestration: dedup, resolution, checkpointing
+    judge_runner.py           # Thin orchestration over stage logic + executors
     merge.py                  # Merge inference + judge outputs → Parquet
     metrics.py                # Score stats, Cohen's kappa, token usage, cost
 
@@ -66,13 +81,17 @@ uv run pytest tests/ -v
 | `test_config_validation.py` | Placeholder detection, missing endpoints, invalid templates |
 | `test_dotenv_loading.py` | `.env` / `.env.local` loading and precedence |
 | `test_dry_run.py` | `--dry-run` flag: summary output, validation gating |
+| `test_executors.py` | Shared request-response and batch executors |
+| `test_inference_stage.py` | Inference-stage request building and output mapping |
 | `test_inter_rater.py` | Cohen's kappa: perfect/zero/chance agreement, known values |
 | `test_judge_v2.py` | v2 bare-integer parsing: clean int, clamping, preamble, fallback |
+| `test_judging_stage.py` | Judge-stage prompt building and output mapping |
 | `test_mode_resolution.py` | `resolve_inference_mode()` with different config combinations |
 | `test_parsing.py` | v1 judge JSON parsing: valid, malformed, markdown fences, regex |
 | `test_pick_col.py` | Case-insensitive column detection, alias resolution |
 | `test_pricing.py` | Token aggregation, cost calculation, pricing disabled |
 | `test_rate_limit_compute.py` | Rate limit auto-tuning, `get_max_judge_max_tokens()` |
+| `test_resolution.py` | Public config → internal adapter/execution target mapping |
 | `test_resume_dedup.py` | JSONL append, dedup index, resume filtering |
 | `test_retry_filter.py` | `is_retryable()`: transport errors, HTTP status codes, logic errors |
 | `test_run_manifest.py` | Manifest creation and update |

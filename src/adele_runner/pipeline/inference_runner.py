@@ -1,13 +1,10 @@
-"""Async inference runner with bounded concurrency and checkpointing."""
+"""Inference pipeline orchestration."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
-from typing import Protocol
 
 from rich.progress import (
     BarColumn,
@@ -17,141 +14,32 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from adele_runner.adapters.foundry_inference import FoundryAdapter
-from adele_runner.adapters.google_genai import GoogleGenAIAdapter
 from adele_runner.config import AppConfig
+from adele_runner.runtime.executors import BatchExecutor, RequestResponseExecutor
+from adele_runner.runtime.resolution import (
+    resolve_inference_execution_settings,
+    resolve_inference_target,
+)
+from adele_runner.runtime.types import ChatResponse
 from adele_runner.schemas import DatasetItem, InferenceOutput, RunManifest
-from adele_runner.utils.concurrency import AsyncRateLimiter, bounded_gather
+from adele_runner.stages.inference import build_inference_output, build_inference_request
 from adele_runner.utils.io import append_jsonl, build_dedup_index, ensure_run_dir
-from adele_runner.utils.retry import make_retry_decorator
 
 logger = logging.getLogger(__name__)
 
 
-class InferenceAdapter(Protocol):
-    async def infer(self, item: DatasetItem) -> InferenceOutput: ...
-
-
-async def _infer_with_retry(
-    adapter: InferenceAdapter,
-    item: DatasetItem,
-    retry_decorator,  # noqa: ANN001
-) -> InferenceOutput:
-    @retry_decorator
-    async def _call() -> InferenceOutput:
-        return await adapter.infer(item)
-
-    return await _call()
-
-
-async def _run_async_inference(
-    config: AppConfig,
-    pending: list[DatasetItem],
-    outputs_path: Path,
-) -> list[InferenceOutput]:
-    """Run inference via an async adapter with bounded concurrency."""
-    concurrency_cfg = config.concurrency
-
-    # Construct rate limiter if effective_rpm was computed from rate limits
-    rate_limiter: AsyncRateLimiter | None = None
-    if concurrency_cfg.effective_rpm is not None:
-        rl = config.inference.rate_limits
-        rate_limiter = AsyncRateLimiter(
-            concurrency_cfg.effective_rpm,
-            tpm=rl.tokens_per_minute if rl else None,
-        )
-        logger.info("Rate limiter enabled: %d RPM", concurrency_cfg.effective_rpm)
-
-    mode = config.resolve_inference_mode()
-    if mode == "google":
-        adapter: InferenceAdapter = GoogleGenAIAdapter(config, rate_limiter=rate_limiter)
-    else:
-        adapter = FoundryAdapter(config, rate_limiter=rate_limiter)
-
-    retry_dec = make_retry_decorator(
-        max_retries=concurrency_cfg.max_retries,
-        backoff_base=concurrency_cfg.backoff_base_s,
-        backoff_max=concurrency_cfg.backoff_max_s,
-        rate_limiter=rate_limiter,
-    )
-
-    completed: list[InferenceOutput] = []
-
-    # Process in batches so we checkpoint frequently
-    chunk_size = concurrency_cfg.max_in_flight * 4
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.completed}/{task.total}"),
-        TimeRemainingColumn(),
-    ) as progress:
-        task_id = progress.add_task("Inference", total=len(pending))
-
-        for chunk_start in range(0, len(pending), chunk_size):
-            chunk = pending[chunk_start : chunk_start + chunk_size]
-            tasks = [_infer_with_retry(adapter, item, retry_dec) for item in chunk]
-            results = await bounded_gather(
-                tasks,
-                max_concurrency=concurrency_cfg.max_in_flight,
-                rate_limiter=rate_limiter,
-            )
-
-            for result in results:
-                if isinstance(result, BaseException):
-                    logger.error("Inference task failed (skipping): %s", result)
-                    progress.advance(task_id)
-                    continue
-                append_jsonl(outputs_path, result)
-                completed.append(result)
-                progress.advance(task_id)
-
-            logger.info(
-                "Checkpoint: %d / %d done.",
-                chunk_start + len(chunk),
-                len(pending),
-            )
-
-    return completed
-
-
-def _run_azure_openai_batch(
-    config: AppConfig,
-    pending: list[DatasetItem],
-    run_dir: Path,
-    outputs_path: Path,
-) -> list[InferenceOutput]:
-    """Run inference via the Azure OpenAI Batch API."""
-    from adele_runner.adapters.azure_openai_batch import AzureOpenAIBatchAdapter
-
-    adapter = AzureOpenAIBatchAdapter(config)
-    results = adapter.run_batch(pending, run_dir)
-
-    for result in results:
-        append_jsonl(outputs_path, result)
-
-    return results
-
-
 async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[InferenceOutput]:
-    """Run inference over *items* with checkpointing and dedup.
-
-    Already-completed (instance_id, model_id) pairs are skipped.
-    Results are appended to ``outputs.jsonl`` as they complete.
-    """
-    mode = config.resolve_inference_mode()
+    """Run inference over *items* with checkpointing and dedup."""
+    target = resolve_inference_target(config)
+    settings = resolve_inference_execution_settings(config)
     run_dir = config.run_dir()
     ensure_run_dir(run_dir)
     outputs_path = config.outputs_path()
 
-    model_id = config.inference.model
-
-    # --- Write initial RunManifest ---
     manifest = RunManifest(
         run_id=config.run.run_id,
         dataset_name=config.dataset.name,
-        model_id=model_id,
+        model_id=target.model,
         total_instances=len(items),
         start_time=datetime.utcnow(),
     )
@@ -163,29 +51,62 @@ async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[Inf
     done = build_dedup_index(outputs_path, "instance_id", "model_id")
     logger.info("Dedup index loaded: %d already completed.", len(done))
 
-    pending = [i for i in items if (i.instance_id, model_id) not in done]
+    pending = [item for item in items if (item.instance_id, target.model) not in done]
     logger.info("%d / %d items pending inference.", len(pending), len(items))
 
     if not pending:
         logger.info("All items already completed. Nothing to do.")
         return []
 
-    logger.info("Inference mode: %s", mode)
+    requests = [build_inference_request(item, target) for item in pending]
+    item_by_id = {item.instance_id: item for item in pending}
+    completed: list[InferenceOutput] = []
 
-    if mode == "batch":
-        completed = await asyncio.to_thread(
-            _run_azure_openai_batch,
-            config,
-            pending,
-            run_dir,
-            outputs_path,
+    def _record_response(response: ChatResponse | BaseException) -> None:
+        if isinstance(response, BaseException):
+            return
+        item = item_by_id.get(response.request_id)
+        if item is None:
+            logger.warning("Inference response had unknown request_id=%s", response.request_id)
+            return
+        output = build_inference_output(item, target, response, config.run.run_id)
+        append_jsonl(outputs_path, output)
+        completed.append(output)
+
+    logger.info("Inference execution: adapter=%s mode=%s", target.adapter_kind, target.execution_kind)
+
+    if target.execution_kind == "batch":
+        await BatchExecutor(config).execute(
+            adapter_kind=target.adapter_kind,
+            requests=requests,
+            run_dir=run_dir,
+            settings=settings,
+            on_result=_record_response,
         )
     else:
-        completed = await _run_async_inference(config, pending, outputs_path)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeRemainingColumn(),
+        ) as progress:
+            task_id = progress.add_task("Inference", total=len(requests))
+
+            def _record_and_advance(response: ChatResponse | BaseException) -> None:
+                _record_response(response)
+                progress.advance(task_id)
+
+            await RequestResponseExecutor(config).execute(
+                adapter_kind=target.adapter_kind,
+                requests=requests,
+                settings=settings,
+                rate_limits=target.rate_limits,
+                on_result=_record_and_advance,
+            )
 
     logger.info("Inference complete. %d outputs written to %s", len(completed), outputs_path)
 
-    # --- Update RunManifest with completion info ---
     manifest.end_time = datetime.utcnow()
     manifest.completed_instances = len(completed)
     config.manifest_path().write_text(

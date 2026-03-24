@@ -108,16 +108,16 @@ When a run includes both Foundry and Batch judges, they execute concurrently:
 run_judge()
     │
     ├── asyncio.gather(
-    │       _run_foundry_judges(...),     ← async coroutine
-    │       asyncio.to_thread(            ← blocking, in thread
-    │           _run_batch_judges, ...
-    │       )
+    │       _run_request_response_judges(...),
+    │       _run_batch_judges(...)
     │   )
     │
     └── All judge outputs appended to judge_outputs.jsonl
 ```
 
-Foundry judges process instances with bounded async concurrency (semaphore). Batch judges submit a single JSONL file and poll for completion.
+Internally, request building and parsing live in `stages/judging.py`, while `pipeline/judge_runner.py` only handles orchestration. Foundry judges share the same provider adapter used by inference; the only stage-specific differences are the rendered prompt and the response parser.
+
+Foundry judges use the shared `RequestResponseExecutor` with bounded async concurrency and retry handling. Batch judges use the shared `BatchExecutor`, which delegates the Azure OpenAI batch lifecycle to the batch adapter.
 
 ## Dedup
 

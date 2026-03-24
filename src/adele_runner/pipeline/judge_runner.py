@@ -1,643 +1,150 @@
-"""Multi-judge evaluation pipeline."""
+"""Judge pipeline orchestration."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
-import time
-from pathlib import Path
-from typing import Any
 
-from adele_runner.config import AppConfig, JudgeConfig
+from adele_runner.config import AppConfig
+from adele_runner.runtime.executors import BatchExecutor, RequestResponseExecutor
+from adele_runner.runtime.resolution import (
+    resolve_batch_execution_settings,
+    resolve_judge_request_response_settings,
+    resolve_judge_targets,
+)
+from adele_runner.runtime.types import ChatResponse, ResolvedJudgeTarget
 from adele_runner.schemas import InferenceOutput, JudgeOutput
-from adele_runner.utils.concurrency import AsyncRateLimiter, bounded_gather
+from adele_runner.stages.judging import (
+    build_judge_output,
+    build_judge_prompt,
+    build_judge_request,
+    parse_judge_json,
+    parse_judge_v2,
+)
 from adele_runner.utils.io import append_jsonl, build_dedup_index, ensure_run_dir
-from adele_runner.utils.retry import make_retry_decorator
 
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Prompt templates
-# ---------------------------------------------------------------------------
-
-_JUDGE_PROMPT_V2 = """\
-TASK:
-{question}
-
-GROUND TRUTH:
-{ground_truth}
-
-Model Response:
-{response}
-
-You are an evaluation system that compares a MODEL RESPONSE to a GROUND TRUTH of a given TASK \
-(as shown above), and rates the response on a scale of 1 to 5, where 5 means surely correct \
-and 1 means surely incorrect. Your response must be concise, responding with exactly one \
-integer score between 1 and 5 and nothing else that may be redundant.
-
-score:
-"""
-
-
-_JUDGE_PROMPT_V1 = """\
-You are an expert evaluator. Given the following question, reference answer, and model response, \
-evaluate the model response.
-
-Question:
-{question}
-
-Reference Answer:
-{ground_truth}
-
-Model Response:
-{response}
-
-Instructions:
-- Score the response on a scale of 1-5 (1=completely wrong, 5=perfectly correct).
-- Provide a verdict: "correct", "incorrect", "partial", or "unknown".
-- Provide a brief reason (1-2 sentences).
-
-Respond in JSON only, with exactly this structure:
-{{"score": <int 1-5>, "verdict": "<correct|incorrect|partial|unknown>", "reason": "<string>"}}
-"""
-
-
-def build_judge_prompt(
-    item_prompt: str,
-    ground_truth: str,
-    response: str,
-    template: str = "v1",
-) -> str:
-    if template == "v1":
-        return _JUDGE_PROMPT_V1.format(
-            question=item_prompt,
-            ground_truth=ground_truth,
-            response=response,
-        )
-    elif template == "v2":
-        return _JUDGE_PROMPT_V2.format(
-            question=item_prompt,
-            ground_truth=ground_truth,
-            response=response,
-        )
-    raise ValueError(f"Unknown judge prompt template: {template}")
-
-
-# ---------------------------------------------------------------------------
-# JSON parsing with fallback
-# ---------------------------------------------------------------------------
-
-_JSON_LIKE_RE = re.compile(r"\{[^{}]*\}", re.DOTALL)
-_VALID_VERDICTS = {"correct", "incorrect", "partial", "unknown"}
-
-
-def parse_judge_json(raw: str) -> dict[str, Any]:
-    """Parse judge JSON output with repair fallback."""
-    # 1) Direct parse
-    try:
-        obj = json.loads(raw.strip())
-        return _validate_judge_obj(obj)
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # 2) Extract first JSON-like block
-    match = _JSON_LIKE_RE.search(raw)
-    if match:
-        try:
-            obj = json.loads(match.group())
-            return _validate_judge_obj(obj)
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    # 3) Regex fallback for score and verdict
-    score_match = re.search(r'"score"\s*:\s*(\d)', raw)
-    verdict_match = re.search(r'"verdict"\s*:\s*"(\w+)"', raw)
-    reason_match = re.search(r'"reason"\s*:\s*"([^"]*)"', raw)
-
-    score = int(score_match.group(1)) if score_match else 1
-    verdict = verdict_match.group(1) if verdict_match else "unknown"
-    if verdict not in _VALID_VERDICTS:
-        verdict = "unknown"
-    reason = reason_match.group(1) if reason_match else "Could not parse reason."
-
-    logger.warning("Used regex fallback for judge output: score=%d verdict=%s", score, verdict)
-    return {"score": max(1, min(5, score)), "verdict": verdict, "reason": reason}
-
-
-def _validate_judge_obj(obj: dict[str, Any]) -> dict[str, Any]:
-    score = int(obj["score"])
-    if not (1 <= score <= 5):
-        raise ValueError(f"Score out of range: {score}")
-    verdict = str(obj.get("verdict", "unknown"))
-    if verdict not in _VALID_VERDICTS:
-        verdict = "unknown"
-    reason = str(obj.get("reason", ""))
-    return {"score": score, "verdict": verdict, "reason": reason}
-
-
-# ---------------------------------------------------------------------------
-# v2 bare-integer parsing
-# ---------------------------------------------------------------------------
-
-
-def parse_judge_v2(raw: str) -> dict[str, Any]:
-    """Parse v2 judge output: expects a bare integer score 1-5."""
-    # 1) Try direct integer parse
-    stripped = raw.strip()
-    try:
-        score = int(stripped)
-        score = max(1, min(5, score))
-        return {
-            "score": score,
-            "verdict": "unknown",
-            "reason": "Scored via v2 bare-integer prompt",
-        }
-    except ValueError:
-        pass
-
-    # 2) Fallback: regex for first integer 1-5
-    match = re.search(r"\b([1-5])\b", raw)
-    if match:
-        score = int(match.group(1))
-        return {
-            "score": score,
-            "verdict": "unknown",
-            "reason": "Scored via v2 bare-integer prompt",
-        }
-
-    # 3) Default to score=1
-    logger.warning("Could not parse v2 judge output, defaulting to score=1: %r", raw[:200])
-    return {
-        "score": 1,
-        "verdict": "unknown",
-        "reason": "Scored via v2 bare-integer prompt",
-    }
-
-
-# ---------------------------------------------------------------------------
-# Judge adapter — Foundry async (reuses Foundry client)
-# ---------------------------------------------------------------------------
-
-
-class JudgeAdapter:
-    """Single-judge inference adapter (Azure AI Foundry, async)."""
-
-    def __init__(
-        self, judge_cfg: JudgeConfig, app_cfg: AppConfig, rate_limiter: object | None = None
-    ) -> None:
-        self._judge_cfg = judge_cfg
-        self._app_cfg = app_cfg
-        self._client = self._build_client()
-        self._rate_limit_warned = False
-        self._rate_limiter = rate_limiter
-
-    def _build_client(self) -> Any:
-        try:
-            from azure.ai.inference import ChatCompletionsClient  # type: ignore[import]
-            from azure.core.credentials import AzureKeyCredential  # type: ignore[import]
-        except ImportError as exc:
-            raise ImportError("azure-ai-inference is required.") from exc
-
-        api_key = self._app_cfg.get_foundry_api_key()
-        return ChatCompletionsClient(
-            endpoint=self._app_cfg.azure.foundry.endpoint,
-            credential=AzureKeyCredential(api_key),
-        )
-
-    def _on_response(self, response: Any) -> None:
-        """Capture rate-limit headers from Azure pipeline responses."""
-        try:
-            headers = dict(response.http_response.headers)
-        except AttributeError:
-            return
-        self._check_rate_limit_headers(headers)
-        if self._rate_limiter is not None:
-            self._rate_limiter.update_from_headers(headers)  # type: ignore[attr-defined]
-
-    def _check_rate_limit_headers(self, headers: dict[str, str]) -> None:
-        """Log a warning if actual rate limits differ significantly from config."""
-        if self._rate_limit_warned:
-            return
-
-        rl = self._judge_cfg.rate_limits
-        if rl is None:
-            return
-
-        actual_tpm_str = headers.get("x-ratelimit-limit-tokens")
-        actual_rpm_str = headers.get("x-ratelimit-limit-requests")
-
-        if actual_tpm_str is None and actual_rpm_str is None:
-            return
-
-        self._rate_limit_warned = True
-
-        if actual_tpm_str:
-            try:
-                actual_tpm = int(actual_tpm_str)
-                if abs(actual_tpm - rl.tokens_per_minute) / max(1, rl.tokens_per_minute) > 0.2:
-                    logger.warning(
-                        "Judge [%s]: Actual TPM from Azure (%d) differs from config (%d) by >20%%",
-                        self._judge_cfg.name,
-                        actual_tpm,
-                        rl.tokens_per_minute,
-                    )
-            except (ValueError, TypeError):
-                pass
-
-        if actual_rpm_str:
-            try:
-                actual_rpm = int(actual_rpm_str)
-                if abs(actual_rpm - rl.requests_per_minute) / max(1, rl.requests_per_minute) > 0.2:
-                    logger.warning(
-                        "Judge [%s]: Actual RPM from Azure (%d) differs from config (%d) by >20%%",
-                        self._judge_cfg.name,
-                        actual_rpm,
-                        rl.requests_per_minute,
-                    )
-            except (ValueError, TypeError):
-                pass
-
-    async def judge(
-        self,
-        inference_output: InferenceOutput,
-        ground_truth: str,
-        judge_prompt: str,
-        prompt_template: str = "v1",
-    ) -> JudgeOutput:
-        from azure.ai.inference.models import UserMessage  # type: ignore[import]
-
-        timeout_s = self._app_cfg.concurrency.request_timeout_s
-
-        try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self._client.complete,
-                    messages=[UserMessage(content=judge_prompt)],
-                    model=self._judge_cfg.model,
-                    temperature=0.0,
-                    max_tokens=self._judge_cfg.max_tokens,
-                    raw_response_hook=self._on_response,
-                ),
-                timeout=timeout_s,
-            )
-        except TimeoutError:
-            logger.error(
-                "Judge timed out for instance_id=%s judge=%s after %.1fs",
-                inference_output.instance_id,
-                self._judge_cfg.name,
-                timeout_s,
-            )
-            raise
-        raw = response.choices[0].message.content or ""
-        usage = response.usage
-
-        if self._rate_limiter is not None and usage:
-            self._rate_limiter.update_token_usage(  # type: ignore[attr-defined]
-                usage.prompt_tokens or 0, usage.completion_tokens or 0
-            )
-
-        parsed = parse_judge_v2(raw) if prompt_template == "v2" else parse_judge_json(raw)
-
-        return JudgeOutput(
-            instance_id=inference_output.instance_id,
-            model_id=inference_output.model_id,
-            judge_name=self._judge_cfg.name,
-            score=parsed["score"],
-            verdict=parsed["verdict"],
-            reason=parsed["reason"],
-            raw_output=raw,
-            judge_prompt=judge_prompt,
-            tokens_prompt=usage.prompt_tokens if usage else None,
-            tokens_completion=usage.completion_tokens if usage else None,
-            run_id=self._app_cfg.run.run_id,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Judge adapter — Azure OpenAI Batch
-# ---------------------------------------------------------------------------
-
-_BATCH_POLL_INTERVAL_S = 30
-
-
-class JudgeBatchAdapter:
-    """Submit judge prompts via the Azure OpenAI Batch API."""
-
-    def __init__(self, judge_cfg: JudgeConfig, app_cfg: AppConfig) -> None:
-        self._judge_cfg = judge_cfg
-        self._app_cfg = app_cfg
-        self._client = self._build_client()
-
-    def _build_client(self) -> Any:
-        try:
-            from openai import AzureOpenAI  # type: ignore[import]
-        except ImportError as exc:
-            raise ImportError(
-                "openai package is required for batch judge mode. Run: uv add openai"
-            ) from exc
-
-        api_key = self._app_cfg.get_batch_api_key()
-        return AzureOpenAI(
-            azure_endpoint=self._app_cfg.azure.batch.endpoint,
-            api_key=api_key,
-            api_version=self._app_cfg.azure.batch.api_version,
-        )
-
-    def run_batch(
-        self,
-        requests: list[tuple[str, str]],
-        run_dir: Path,
-        max_poll_time_s: float = 3600.0,
-    ) -> dict[str, dict[str, Any]]:
-        """Submit batch, poll, return {custom_id: {content, prompt_tokens, completion_tokens}}.
-
-        *requests* is a list of ``(custom_id, prompt)`` tuples.
-        *max_poll_time_s* is the maximum time to spend polling before raising TimeoutError.
-
-        Large request sets are automatically split into chunks that respect
-        Azure Batch API limits (request count and file size).
-        """
-        from adele_runner.utils.batch_split import split_batch_requests
-
-        batch_cfg = self._app_cfg.azure.batch
-
-        # Build JSONL lines
-        jsonl_lines: list[str] = []
-        for custom_id, prompt in requests:
-            row = {
-                "custom_id": custom_id,
-                "method": "POST",
-                "url": batch_cfg.completion_endpoint,
-                "body": {
-                    "model": self._judge_cfg.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.0,
-                    "max_tokens": self._judge_cfg.max_tokens,
-                },
-            }
-            jsonl_lines.append(json.dumps(row))
-
-        chunks = split_batch_requests(
-            jsonl_lines,
-            max_requests=batch_cfg.max_requests_per_file,
-            max_bytes=batch_cfg.max_bytes_per_file,
-        )
-        all_results: dict[str, dict[str, Any]] = {}
-
-        for chunk_idx, chunk in enumerate(chunks):
-            suffix = f"_{chunk_idx}" if len(chunks) > 1 else ""
-            input_path = run_dir / f"judge_batch_input_{self._judge_cfg.name}{suffix}.jsonl"
-            input_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with input_path.open("w", encoding="utf-8") as fh:
-                for line in chunk:
-                    fh.write(line + "\n")
-            logger.info(
-                "Judge batch [%s] chunk %d/%d: wrote %d requests to %s",
-                self._judge_cfg.name,
-                chunk_idx + 1,
-                len(chunks),
-                len(chunk),
-                input_path,
-            )
-
-            chunk_results = self._submit_and_poll(input_path, batch_cfg, max_poll_time_s, chunk_idx)
-            all_results.update(chunk_results)
-
-        logger.info("Judge batch [%s]: %d total results.", self._judge_cfg.name, len(all_results))
-        return all_results
-
-    def _submit_and_poll(
-        self,
-        input_path: Path,
-        batch_cfg: Any,
-        max_poll_time_s: float,
-        chunk_idx: int,
-    ) -> dict[str, dict[str, Any]]:
-        """Upload, create batch, poll, and download results for a single chunk."""
-        # Upload
-        with input_path.open("rb") as fh:
-            file_obj = self._client.files.create(file=fh, purpose="batch")
-        logger.info("Judge batch [%s]: uploaded file %s", self._judge_cfg.name, file_obj.id)
-
-        # Create batch
-        batch = self._client.batches.create(
-            input_file_id=file_obj.id,
-            endpoint=batch_cfg.completion_endpoint,
-            completion_window=self._app_cfg.concurrency.batch_completion_window,
-        )
-        logger.info(
-            "Judge batch [%s]: created %s (status=%s)",
-            self._judge_cfg.name,
-            batch.id,
-            batch.status,
-        )
-
-        # Poll with timeout
-        poll_start = time.monotonic()
-        while batch.status not in ("completed", "failed", "expired", "cancelled"):
-            elapsed = time.monotonic() - poll_start
-            if elapsed >= max_poll_time_s:
-                raise TimeoutError(
-                    f"Judge batch [{self._judge_cfg.name}] {batch.id} polling timed out "
-                    f"after {elapsed:.0f}s (limit: {max_poll_time_s:.0f}s). "
-                    f"Last status: {batch.status}"
-                )
-            time.sleep(_BATCH_POLL_INTERVAL_S)
-            batch = self._client.batches.retrieve(batch.id)
-            logger.info(
-                "Judge batch [%s] %s status: %s", self._judge_cfg.name, batch.id, batch.status
-            )
-
-        if batch.status != "completed":
-            raise RuntimeError(
-                f"Judge batch [{self._judge_cfg.name}] {batch.id} ended with status: {batch.status}"
-            )
-
-        # Download results
-        result_content = self._client.files.content(batch.output_file_id)
-        results: dict[str, dict[str, Any]] = {}
-        for line in result_content.text.splitlines():
-            if not line.strip():
-                continue
-            obj = json.loads(line)
-            custom_id = obj.get("custom_id", "")
-            body = obj.get("response", {}).get("body", {})
-            choices = body.get("choices", [])
-            usage = body.get("usage", {})
-            content = choices[0]["message"]["content"] if choices else ""
-            results[custom_id] = {
-                "content": content,
-                "prompt_tokens": usage.get("prompt_tokens"),
-                "completion_tokens": usage.get("completion_tokens"),
-            }
-
-        return results
-
-
-# ---------------------------------------------------------------------------
-# Internal: run foundry judges (async)
-# ---------------------------------------------------------------------------
-
-
-async def _run_foundry_judges(
+async def _run_request_response_judges(
     config: AppConfig,
-    foundry_judges: list[JudgeConfig],
+    targets: list[ResolvedJudgeTarget],
     inference_outputs: list[InferenceOutput],
     ground_truths: dict[str, str],
     done: set[tuple],
-    judge_path: Path,
-) -> list[JudgeOutput]:
-    """Run foundry judges via async bounded concurrency."""
-    # Construct rate limiter if effective_rpm was computed from rate limits
-    rate_limiter: AsyncRateLimiter | None = None
-    if config.concurrency.effective_rpm is not None:
-        judge_rl = config.get_most_restrictive_judge_rate_limits()
-        rate_limiter = AsyncRateLimiter(
-            config.concurrency.effective_rpm,
-            tpm=judge_rl.tokens_per_minute if judge_rl else None,
-        )
-        logger.info("Judge rate limiter enabled: %d RPM", config.concurrency.effective_rpm)
-
-    retry_dec = make_retry_decorator(
-        max_retries=config.concurrency.max_retries,
-        backoff_base=config.concurrency.backoff_base_s,
-        backoff_max=config.concurrency.backoff_max_s,
-        rate_limiter=rate_limiter,
-    )
-    adapters = [JudgeAdapter(j, config, rate_limiter=rate_limiter) for j in foundry_judges]
-    coroutines = []
-    prompt_template = config.judging.prompt_template
-
-    for inf_out in inference_outputs:
-        gt = ground_truths.get(inf_out.instance_id, "")
-        for adapter in adapters:
-            key = (inf_out.instance_id, inf_out.model_id, adapter._judge_cfg.name)
-            if key in done:
-                continue
-            judge_prompt = build_judge_prompt(
-                item_prompt=inf_out.prompt,
-                ground_truth=gt,
-                response=inf_out.response,
-                template=prompt_template,
-            )
-
-            @retry_dec
-            async def _call(
-                _adapter=adapter,
-                _inf=inf_out,
-                _gt=gt,
-                _jp=judge_prompt,
-                _tmpl=prompt_template,
-            ) -> JudgeOutput:
-                return await _adapter.judge(_inf, _gt, _jp, prompt_template=_tmpl)
-
-            coroutines.append(_call())
-
-    logger.info("Foundry judge tasks pending: %d", len(coroutines))
-    if not coroutines:
+    judge_path,
+) -> list[JudgeOutput]:  # noqa: ANN001
+    if not targets:
         return []
 
-    results = await bounded_gather(
-        coroutines, max_concurrency=config.concurrency.max_in_flight, rate_limiter=rate_limiter
-    )
-    outputs: list[JudgeOutput] = []
-    for result in results:
-        if isinstance(result, BaseException):
-            logger.error("Judge task failed: %s", result)
-            continue
-        append_jsonl(judge_path, result)
-        outputs.append(result)
+    settings = resolve_judge_request_response_settings(config)
+    requests = []
+    request_meta: dict[str, tuple[ResolvedJudgeTarget, InferenceOutput, str]] = {}
 
+    for target in targets:
+        for inference_output in inference_outputs:
+            key = (inference_output.instance_id, inference_output.model_id, target.judge_name)
+            if key in done:
+                continue
+            ground_truth = ground_truths.get(inference_output.instance_id, "")
+            request, judge_prompt = build_judge_request(inference_output, ground_truth, target)
+            requests.append(request)
+            request_meta[request.request_id] = (target, inference_output, judge_prompt)
+
+    logger.info("Request-response judge tasks pending: %d", len(requests))
+    if not requests:
+        return []
+
+    outputs: list[JudgeOutput] = []
+
+    def _record_response(response: ChatResponse | BaseException) -> None:
+        if isinstance(response, BaseException):
+            return
+        meta = request_meta.get(response.request_id)
+        if meta is None:
+            logger.warning("Judge response had unknown request_id=%s", response.request_id)
+            return
+        target, inference_output, judge_prompt = meta
+        output = build_judge_output(
+            inference_output,
+            target,
+            judge_prompt,
+            response,
+            config.run.run_id,
+        )
+        append_jsonl(judge_path, output)
+        outputs.append(output)
+
+    await RequestResponseExecutor(config).execute(
+        adapter_kind=targets[0].adapter_kind,
+        requests=requests,
+        settings=settings,
+        rate_limits=config.get_most_restrictive_judge_rate_limits(),
+        on_result=_record_response,
+    )
     return outputs
 
 
-# ---------------------------------------------------------------------------
-# Internal: run batch judges
-# ---------------------------------------------------------------------------
-
-
-def _run_batch_judges(
+async def _run_batch_judges(
     config: AppConfig,
-    batch_judges: list[JudgeConfig],
+    targets: list[ResolvedJudgeTarget],
     inference_outputs: list[InferenceOutput],
     ground_truths: dict[str, str],
     done: set[tuple],
-    run_dir: Path,
-    judge_path: Path,
-) -> list[JudgeOutput]:
-    """Run batch judges via Azure OpenAI Batch API (blocking)."""
-    all_outputs: list[JudgeOutput] = []
-    prompt_template = config.judging.prompt_template
-    max_poll_time_s = config.concurrency.max_poll_time_s
+    run_dir,
+    judge_path,
+) -> list[JudgeOutput]:  # noqa: ANN001
+    if not targets:
+        return []
 
-    for judge_cfg in batch_judges:
-        # Collect pending requests for this judge
-        requests: list[tuple[str, str]] = []
-        # Map custom_id -> (InferenceOutput, judge_prompt) for result assembly
+    settings = resolve_batch_execution_settings(config)
+    all_outputs: list[JudgeOutput] = []
+
+    for target in targets:
+        requests = []
         request_meta: dict[str, tuple[InferenceOutput, str]] = {}
 
-        for inf_out in inference_outputs:
-            key = (inf_out.instance_id, inf_out.model_id, judge_cfg.name)
+        for inference_output in inference_outputs:
+            key = (inference_output.instance_id, inference_output.model_id, target.judge_name)
             if key in done:
                 continue
-            gt = ground_truths.get(inf_out.instance_id, "")
-            judge_prompt = build_judge_prompt(
-                item_prompt=inf_out.prompt,
-                ground_truth=gt,
-                response=inf_out.response,
-                template=prompt_template,
-            )
-            custom_id = f"{inf_out.instance_id}::{inf_out.model_id}"
-            requests.append((custom_id, judge_prompt))
-            request_meta[custom_id] = (inf_out, judge_prompt)
+            ground_truth = ground_truths.get(inference_output.instance_id, "")
+            request, judge_prompt = build_judge_request(inference_output, ground_truth, target)
+            requests.append(request)
+            request_meta[request.request_id] = (inference_output, judge_prompt)
 
         if not requests:
-            logger.info("Batch judge [%s]: nothing pending.", judge_cfg.name)
+            logger.info("Batch judge [%s]: nothing pending.", target.judge_name)
             continue
 
-        logger.info("Batch judge [%s]: %d tasks pending.", judge_cfg.name, len(requests))
-        adapter = JudgeBatchAdapter(judge_cfg, config)
-        raw_results = adapter.run_batch(requests, run_dir, max_poll_time_s=max_poll_time_s)
-
-        for custom_id, result_data in raw_results.items():
-            meta = request_meta.get(custom_id)
+        logger.info("Batch judge [%s]: %d tasks pending.", target.judge_name, len(requests))
+        responses = await BatchExecutor(config).execute(
+            adapter_kind=target.adapter_kind,
+            requests=requests,
+            run_dir=run_dir,
+            settings=settings,
+        )
+        for response in responses:
+            meta = request_meta.get(response.request_id)
             if meta is None:
-                logger.warning("Batch judge [%s]: unknown custom_id %s", judge_cfg.name, custom_id)
+                logger.warning(
+                    "Batch judge [%s]: unknown request_id %s",
+                    target.judge_name,
+                    response.request_id,
+                )
                 continue
-            inf_out, judge_prompt = meta
-            raw_text = result_data["content"]
-
-            if prompt_template == "v2":
-                parsed = parse_judge_v2(raw_text)
-            else:
-                parsed = parse_judge_json(raw_text)
-
-            output = JudgeOutput(
-                instance_id=inf_out.instance_id,
-                model_id=inf_out.model_id,
-                judge_name=judge_cfg.name,
-                score=parsed["score"],
-                verdict=parsed["verdict"],
-                reason=parsed["reason"],
-                raw_output=raw_text,
-                judge_prompt=judge_prompt,
-                tokens_prompt=result_data.get("prompt_tokens"),
-                tokens_completion=result_data.get("completion_tokens"),
-                run_id=config.run.run_id,
+            inference_output, judge_prompt = meta
+            output = build_judge_output(
+                inference_output,
+                target,
+                judge_prompt,
+                response,
+                config.run.run_id,
             )
             append_jsonl(judge_path, output)
             all_outputs.append(output)
 
     return all_outputs
-
-
-# ---------------------------------------------------------------------------
-# Main runner
-# ---------------------------------------------------------------------------
 
 
 async def run_judge(
@@ -657,46 +164,38 @@ async def run_judge(
     done = build_dedup_index(judge_path, "instance_id", "model_id", "judge_name")
     logger.info("Judge dedup index: %d entries.", len(done))
 
-    # Split judges by provider
-    foundry_judges = [j for j in config.judging.judges if j.provider == "foundry"]
-    batch_judges = [j for j in config.judging.judges if j.provider == "batch"]
+    targets = resolve_judge_targets(config)
+    request_response_targets = [target for target in targets if target.execution_kind == "request_response"]
+    batch_targets = [target for target in targets if target.execution_kind == "batch"]
 
-    all_outputs: list[JudgeOutput] = []
-
-    # Run foundry and batch judges concurrently
-    async def _noop() -> list[JudgeOutput]:
-        return []
-
-    foundry_coro = (
-        _run_foundry_judges(
-            config,
-            foundry_judges,
-            inference_outputs,
-            ground_truths,
-            done,
-            judge_path,
-        )
-        if foundry_judges
-        else _noop()
+    request_response_coro = _run_request_response_judges(
+        config,
+        request_response_targets,
+        inference_outputs,
+        ground_truths,
+        done,
+        judge_path,
     )
-    batch_coro = (
-        asyncio.to_thread(
-            _run_batch_judges,
-            config,
-            batch_judges,
-            inference_outputs,
-            ground_truths,
-            done,
-            run_dir,
-            judge_path,
-        )
-        if batch_judges
-        else _noop()
+    batch_coro = _run_batch_judges(
+        config,
+        batch_targets,
+        inference_outputs,
+        ground_truths,
+        done,
+        run_dir,
+        judge_path,
     )
 
-    foundry_results, batch_results = await asyncio.gather(foundry_coro, batch_coro)
-    all_outputs.extend(foundry_results)
-    all_outputs.extend(batch_results)
+    request_response_outputs, batch_outputs = await asyncio.gather(
+        request_response_coro,
+        batch_coro,
+    )
+    return request_response_outputs + batch_outputs
 
-    logger.info("Judging complete. %d outputs written to %s", len(all_outputs), judge_path)
-    return all_outputs
+
+__all__ = [
+    "build_judge_prompt",
+    "parse_judge_json",
+    "parse_judge_v2",
+    "run_judge",
+]

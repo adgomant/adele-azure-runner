@@ -40,6 +40,8 @@ export AZURE_OPENAI_API_KEY="<your-key>"
 
 ## Batch Lifecycle
 
+Internally, batch transport is handled by `adapters/azure_openai.py`, while the stage-specific request content comes from `stages/inference.py` or `stages/judging.py`. The shared `BatchExecutor` runs the blocking batch workflow in a worker thread so the pipeline can still coordinate request-response and batch lanes concurrently.
+
 ### Inference
 
 ```
@@ -123,6 +125,11 @@ uv run adele-runner run-judge --judge gpt-4o:batch --judge claude-3-opus
 ```
 
 Foundry judges run as async coroutines while batch judges run in a separate thread. Both execute concurrently via `asyncio.gather()`.
+
+Internally, this is implemented as two executor lanes:
+
+- `RequestResponseExecutor` for Foundry judges
+- `BatchExecutor` for Azure OpenAI batch judges
 
 ## Automatic File Splitting
 

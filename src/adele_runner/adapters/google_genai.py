@@ -1,4 +1,4 @@
-"""Google Gemini inference adapter using the google-genai SDK."""
+"""Google Gemini request-response adapter using the google-genai SDK."""
 
 from __future__ import annotations
 
@@ -8,13 +8,15 @@ import time
 from typing import Any
 
 from adele_runner.config import AppConfig
-from adele_runner.schemas import DatasetItem, InferenceOutput
+from adele_runner.runtime.types import AdapterCapabilities, ChatRequest, ChatResponse
 
 logger = logging.getLogger(__name__)
 
 
 class GoogleGenAIAdapter:
-    """Wraps ``google.genai.Client`` for Gemini inference."""
+    """Wraps ``google.genai.Client`` as a normalized request-response transport."""
+
+    capabilities = AdapterCapabilities(request_response=True, batch=False)
 
     def __init__(self, config: AppConfig, rate_limiter: object | None = None) -> None:
         self._cfg = config
@@ -29,15 +31,22 @@ class GoogleGenAIAdapter:
 
         return genai.Client(api_key=self._cfg.get_google_api_key())
 
-    async def infer(self, item: DatasetItem) -> InferenceOutput:
+    def _flatten_messages(self, request: ChatRequest) -> str:
+        parts: list[str] = []
+        for message in request.messages:
+            if message.role == "user":
+                parts.append(message.content)
+            else:
+                parts.append(f"{message.role.upper()}:\n{message.content}")
+        return "\n\n".join(parts)
+
+    async def send(self, request: ChatRequest, *, timeout_s: float) -> ChatResponse:
         from google.genai import types  # type: ignore[import]
 
-        inf = self._cfg.inference
-        timeout_s = self._cfg.concurrency.request_timeout_s
         generation_config = types.GenerateContentConfig(
-            temperature=inf.temperature,
-            top_p=inf.top_p,
-            max_output_tokens=inf.max_tokens,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            max_output_tokens=request.max_tokens,
         )
 
         t0 = time.monotonic()
@@ -45,21 +54,21 @@ class GoogleGenAIAdapter:
             response = await asyncio.wait_for(
                 asyncio.to_thread(
                     self._client.models.generate_content,
-                    model=inf.model,
-                    contents=item.prompt,
+                    model=request.model,
+                    contents=self._flatten_messages(request),
                     config=generation_config,
                 ),
                 timeout=timeout_s,
             )
         except TimeoutError:
             logger.error(
-                "Inference timed out for instance_id=%s after %.1fs",
-                item.instance_id,
+                "Google request timed out for request_id=%s after %.1fs",
+                request.request_id,
                 timeout_s,
             )
             raise
         except Exception as exc:
-            logger.error("Inference failed for instance_id=%s: %s", item.instance_id, exc)
+            logger.error("Google request failed for request_id=%s: %s", request.request_id, exc)
             raise
 
         latency = time.monotonic() - t0
@@ -83,14 +92,13 @@ class GoogleGenAIAdapter:
                 completion_tokens or 0,
             )
 
-        return InferenceOutput(
-            instance_id=item.instance_id,
-            model_id=inf.model,
-            prompt=item.prompt,
-            response=getattr(response, "text", "") or "",
-            tokens_prompt=prompt_tokens,
-            tokens_completion=completion_tokens,
+        return ChatResponse(
+            request_id=request.request_id,
+            content=getattr(response, "text", "") or "",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             latency_s=round(latency, 3),
             finish_reason=finish_reason,
-            run_id=self._cfg.run.run_id,
+            raw_output=getattr(response, "text", "") or "",
+            metadata=dict(request.metadata),
         )
