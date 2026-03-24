@@ -2,7 +2,7 @@
 #
 # Usage:
 #   cp examples/config.multi-judge.yaml config.yaml
-#   export AZURE_AI_API_KEY="<your-foundry-key>"
+#   export AZURE_AI_API_KEY="<your-azure-ai-inference-key>"
 #   export AZURE_OPENAI_API_KEY="<your-aoai-key>"
 #   uv run adele-runner run-all --model gpt-4o
 
@@ -44,12 +44,12 @@ judging:
   enabled: true
   prompt_template: "v2"           # bare-integer scoring (1-5)
   judges:
-    - name: "gpt4o-foundry"
+    - name: "gpt4o-request"
       provider: "azure_ai_inference"
       mode: "request_response"
       model: "gpt-4o"
       # max_tokens: 512         # Max completion tokens (default: 512)
-    - name: "claude-foundry"
+    - name: "claude-request"
       provider: "azure_ai_inference"
       mode: "request_response"
       model: "claude-3-opus"

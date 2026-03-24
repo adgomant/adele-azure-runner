@@ -41,10 +41,6 @@ src/adele_runner/
       anthropic/
         request_response.py
         batch.py
-    foundry.py
-    google_genai.py
-    azure_openai.py
-    factory.py
 
   runtime/
     types.py
@@ -63,7 +59,7 @@ src/adele_runner/
     metrics.py
 ```
 
-The top-level adapter modules are compatibility shims. Real implementations live under `adapters/providers/<provider>/<mode>.py`.
+Adapter implementations live directly under `adapters/providers/<provider>/<mode>.py`.
 
 ## Dataflow
 
@@ -203,12 +199,6 @@ These files are now orchestration-only. They manage:
 
 They no longer embed provider-specific SDK logic or judge parsing logic.
 
-## Compatibility
+## Breaking Change
 
-The new public model is `provider + mode`, but the code still accepts older config/CLI forms for one release cycle:
-
-- `foundry`
-- `google`
-- `batch` as a pseudo-provider
-
-Those are normalized immediately into the new model and should be considered deprecated.
+The repo no longer carries legacy config, CLI, or adapter compatibility layers. Internal and external usage now match the current `provider + mode` model directly.

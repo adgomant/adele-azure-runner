@@ -11,20 +11,10 @@ from adele_runner.runtime.executors import (
     RequestResponseExecutor,
     create_rate_limiter,
 )
-from adele_runner.runtime.resolution import (
-    resolve_judge_binding,
-    resolve_judge_execution_settings,
-    resolve_judge_targets,
-)
-from adele_runner.runtime.types import ChatResponse, ResolvedJudgeTarget
+from adele_runner.runtime.resolution import resolve_judge_plans
+from adele_runner.runtime.types import ChatResponse, ResolvedJudgePlan, ResolvedJudgeTarget
 from adele_runner.schemas import InferenceOutput, JudgeOutput
-from adele_runner.stages.judging import (
-    build_judge_output,
-    build_judge_prompt,
-    build_judge_request,
-    parse_judge_json,
-    parse_judge_v2,
-)
+from adele_runner.stages.judging import build_judge_output, build_judge_request
 from adele_runner.utils.io import append_jsonl, build_dedup_index, ensure_run_dir
 
 logger = logging.getLogger(__name__)
@@ -32,19 +22,20 @@ logger = logging.getLogger(__name__)
 
 async def _run_request_response_judges(
     config: AppConfig,
-    targets: list[ResolvedJudgeTarget],
+    plans: list[ResolvedJudgePlan],
     inference_outputs: list[InferenceOutput],
     ground_truths: dict[str, str],
     done: set[tuple],
     judge_path,
 ) -> list[JudgeOutput]:  # noqa: ANN001
-    if not targets:
+    if not plans:
         return []
 
     outputs: list[JudgeOutput] = []
-    for target in targets:
-        binding = resolve_judge_binding(config, target)
-        settings = resolve_judge_execution_settings(config, target)
+    for plan in plans:
+        target = plan.target
+        binding = plan.binding
+        settings = plan.settings
         rate_limiter = create_rate_limiter(settings, target.rate_limits)
         adapter = binding.create_adapter(
             config,
@@ -104,21 +95,22 @@ async def _run_request_response_judges(
 
 async def _run_batch_judges(
     config: AppConfig,
-    targets: list[ResolvedJudgeTarget],
+    plans: list[ResolvedJudgePlan],
     inference_outputs: list[InferenceOutput],
     ground_truths: dict[str, str],
     done: set[tuple],
     run_dir,
     judge_path,
 ) -> list[JudgeOutput]:  # noqa: ANN001
-    if not targets:
+    if not plans:
         return []
 
     all_outputs: list[JudgeOutput] = []
 
-    for target in targets:
-        binding = resolve_judge_binding(config, target)
-        settings = resolve_judge_execution_settings(config, target)
+    for plan in plans:
+        target = plan.target
+        binding = plan.binding
+        settings = plan.settings
         adapter = binding.create_adapter(config)
         requests = []
         request_meta: dict[str, tuple[InferenceOutput, str]] = {}
@@ -183,13 +175,15 @@ async def run_judge(
     done = build_dedup_index(judge_path, "instance_id", "model_id", "judge_name")
     logger.info("Judge dedup index: %d entries.", len(done))
 
-    targets = resolve_judge_targets(config)
-    request_response_targets = [target for target in targets if target.prompt_mode == "request_response"]
-    batch_targets = [target for target in targets if target.prompt_mode == "batch"]
+    plans = resolve_judge_plans(config)
+    request_response_plans = [
+        plan for plan in plans if plan.binding.execution_kind == "request_response"
+    ]
+    batch_plans = [plan for plan in plans if plan.binding.execution_kind == "batch"]
 
     request_response_coro = _run_request_response_judges(
         config,
-        request_response_targets,
+        request_response_plans,
         inference_outputs,
         ground_truths,
         done,
@@ -197,7 +191,7 @@ async def run_judge(
     )
     batch_coro = _run_batch_judges(
         config,
-        batch_targets,
+        batch_plans,
         inference_outputs,
         ground_truths,
         done,
@@ -210,11 +204,3 @@ async def run_judge(
         batch_coro,
     )
     return request_response_outputs + batch_outputs
-
-
-__all__ = [
-    "build_judge_prompt",
-    "parse_judge_json",
-    "parse_judge_v2",
-    "run_judge",
-]

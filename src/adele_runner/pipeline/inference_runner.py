@@ -20,11 +20,7 @@ from adele_runner.runtime.executors import (
     RequestResponseExecutor,
     create_rate_limiter,
 )
-from adele_runner.runtime.resolution import (
-    resolve_inference_binding,
-    resolve_inference_execution_settings,
-    resolve_inference_target,
-)
+from adele_runner.runtime.resolution import resolve_inference_plan
 from adele_runner.runtime.types import ChatResponse
 from adele_runner.schemas import DatasetItem, InferenceOutput, RunManifest
 from adele_runner.stages.inference import build_inference_output, build_inference_request
@@ -35,9 +31,10 @@ logger = logging.getLogger(__name__)
 
 async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[InferenceOutput]:
     """Run inference over *items* with checkpointing and dedup."""
-    target = resolve_inference_target(config)
-    binding = resolve_inference_binding(config, target)
-    settings = resolve_inference_execution_settings(config)
+    plan = resolve_inference_plan(config)
+    target = plan.target
+    binding = plan.binding
+    settings = plan.settings
     run_dir = config.run_dir()
     ensure_run_dir(run_dir)
     outputs_path = config.outputs_path()

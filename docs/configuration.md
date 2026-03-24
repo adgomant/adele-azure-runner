@@ -225,12 +225,6 @@ judging:
       model: claude-sonnet-4-5
 ```
 
-## Legacy Compatibility
+## Breaking Change
 
-The runner still accepts older config for one release cycle:
-
-- `inference.mode=foundry|google|batch`
-- judge `provider=foundry|batch`
-- `azure.foundry`, `azure.batch`, and `google` top-level config blocks
-
-They are normalized immediately into the new config model and should be treated as deprecated.
+Older config aliases and root compatibility blocks have been removed. Config files must use the current `providers.*` plus explicit `provider` and `mode` fields.

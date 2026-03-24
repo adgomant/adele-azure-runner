@@ -41,7 +41,7 @@ class GoogleGenAIRequestResponseAdapter:
                 project=google_cfg.project,
                 location=google_cfg.location,
             )
-        return genai.Client(api_key=self._cfg.get_google_api_key())
+        return genai.Client(api_key=self._cfg.get_provider_api_key("google_genai"))
 
     def _flatten_messages(self, request: ChatRequest) -> str:
         parts: list[str] = []
@@ -114,4 +114,3 @@ class GoogleGenAIRequestResponseAdapter:
             raw_output=getattr(response, "text", "") or "",
             metadata=dict(request.metadata),
         )
-

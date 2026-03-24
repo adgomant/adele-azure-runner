@@ -37,7 +37,7 @@ class AzureAIInferenceRequestResponseAdapter:
         except ImportError as exc:
             raise ImportError("azure-ai-inference is required. Run: uv sync") from exc
 
-        api_key = self._cfg.get_foundry_api_key()
+        api_key = self._cfg.get_provider_api_key("azure_ai_inference")
         return ChatCompletionsClient(
             endpoint=self._cfg.providers.azure_ai_inference.endpoint,
             credential=AzureKeyCredential(api_key),
@@ -154,4 +154,3 @@ class AzureAIInferenceRequestResponseAdapter:
             raw_output=choice.message.content or "",
             metadata=dict(request.metadata),
         )
-

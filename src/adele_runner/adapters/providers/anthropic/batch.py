@@ -35,7 +35,7 @@ class AnthropicBatchAdapter:
         except ImportError as exc:
             raise ImportError("anthropic package is required for anthropic mode. Run: uv sync") from exc
 
-        kwargs: dict[str, Any] = {"api_key": self._cfg.get_anthropic_api_key()}
+        kwargs: dict[str, Any] = {"api_key": self._cfg.get_provider_api_key("anthropic")}
         if self._cfg.providers.anthropic.base_url:
             kwargs["base_url"] = self._cfg.providers.anthropic.base_url
         return anthropic.Anthropic(**kwargs)

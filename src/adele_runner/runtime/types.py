@@ -147,3 +147,21 @@ class ResolvedJudgeTarget:
     @property
     def rate_limits(self) -> RateLimitsConfig | None:
         return self.provider_target.rate_limits
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedInferencePlan:
+    """Fully resolved inference lane plan."""
+
+    target: ResolvedInferenceTarget
+    binding: ResolvedModeBinding
+    settings: ExecutionSettings
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedJudgePlan:
+    """Fully resolved judge lane plan."""
+
+    target: ResolvedJudgeTarget
+    binding: ResolvedModeBinding
+    settings: ExecutionSettings

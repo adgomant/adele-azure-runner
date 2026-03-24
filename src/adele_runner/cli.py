@@ -14,21 +14,14 @@ from rich.logging import RichHandler
 
 from adele_runner.config import AppConfig, JudgeConfig, RateLimitsConfig, load_config
 from adele_runner.runtime.resolution import (
-    resolve_inference_execution_settings,
-    resolve_judge_execution_settings,
-    resolve_judge_targets,
+    resolve_inference_plan,
+    resolve_judge_plans,
 )
 from adele_runner.runtime.types import ExecutionSettings
 from adele_runner.schemas import InferenceOutput
 
 _VALID_MODES = {"request_response", "batch", "auto"}
 _VALID_PROVIDERS = {"azure_openai", "azure_ai_inference", "google_genai", "anthropic"}
-_LEGACY_PROVIDER_ALIASES = {"foundry": "azure_ai_inference", "google": "google_genai"}
-_LEGACY_MODE_ALIASES = {
-    "foundry": ("azure_ai_inference", "request_response"),
-    "google": ("google_genai", "request_response"),
-    "batch": ("azure_openai", "batch"),
-}
 
 app = typer.Typer(
     name="adele-runner",
@@ -75,13 +68,6 @@ def _get_config(config_path: Path | None):
 
 
 def _normalize_provider(value: str) -> str:
-    if value in _LEGACY_PROVIDER_ALIASES:
-        logging.getLogger(__name__).warning(
-            "Deprecated provider alias '%s'; use '%s'.",
-            value,
-            _LEGACY_PROVIDER_ALIASES[value],
-        )
-        return _LEGACY_PROVIDER_ALIASES[value]
     if value not in _VALID_PROVIDERS:
         raise typer.BadParameter(
             f"Invalid provider '{value}'. Use one of: {', '.join(sorted(_VALID_PROVIDERS))}."
@@ -98,20 +84,6 @@ def _normalize_provider_mode(
     if mode is None:
         return resolved_provider, None
 
-    if mode in _LEGACY_MODE_ALIASES:
-        mapped_provider, mapped_mode = _LEGACY_MODE_ALIASES[mode]
-        logging.getLogger(__name__).warning(
-            "Deprecated mode alias '%s'; use provider='%s' and mode='%s'.",
-            mode,
-            mapped_provider,
-            mapped_mode,
-        )
-        if resolved_provider is not None and resolved_provider != mapped_provider:
-            raise typer.BadParameter(
-                f"Mode '{mode}' implies provider '{mapped_provider}', but --provider was '{resolved_provider}'."
-            )
-        return mapped_provider, mapped_mode
-
     if mode not in _VALID_MODES:
         raise typer.BadParameter(
             f"Invalid mode '{mode}'. Choose from: {', '.join(sorted(_VALID_MODES))}"
@@ -124,49 +96,22 @@ def _parse_judge_flag(value: str) -> JudgeConfig:
 
     Accepted formats::
 
-        MODEL                                   → legacy default
-        MODEL:PROVIDER                          → provider + request_response mode
         MODEL:PROVIDER:MODE                     → explicit provider + mode
         MODEL:PROVIDER:MODE:TPM:RPM             → explicit provider + mode + rate limits
         MODEL:PROVIDER:MODE:TPM:RPM:MAXTOK      → explicit provider + mode + rate limits + max_tokens
-
-    Legacy formats are still accepted for one release cycle.
     """
     parts = value.split(":")
     max_tokens = 512  # default
 
-    if len(parts) == 1:
-        model = parts[0]
-        provider, mode = "azure_ai_inference", "request_response"
-        rate_limits = None
-    elif len(parts) == 2:
-        model, provider_token = parts
-        if provider_token == "batch":
-            provider, mode = "azure_openai", "batch"
-        else:
-            provider = _normalize_provider(provider_token)
-            mode = "request_response"
-        rate_limits = None
-    elif len(parts) == 3:
+    if len(parts) == 3:
         model, provider_token, mode_token = parts
         provider = _normalize_provider(provider_token)
         provider, mode = _normalize_provider_mode(provider, mode_token)
         rate_limits = None
-    elif len(parts) in (4, 5, 6):
-        # Legacy: MODEL:PROVIDER[:MODE]:TPM:RPM[:MAXTOK]
-        if parts[2].isdigit():
-            model, provider_token, tpm_str, rpm_str = parts[:4]
-            if provider_token == "batch":
-                provider, mode = "azure_openai", "batch"
-            else:
-                provider = _normalize_provider(provider_token)
-                mode = "request_response"
-            max_idx = 4
-        else:
-            model, provider_token, mode_token, tpm_str, rpm_str = parts[:5]
-            provider = _normalize_provider(provider_token)
-            provider, mode = _normalize_provider_mode(provider, mode_token)
-            max_idx = 5
+    elif len(parts) in (5, 6):
+        model, provider_token, mode_token, tpm_str, rpm_str = parts[:5]
+        provider = _normalize_provider(provider_token)
+        provider, mode = _normalize_provider_mode(provider, mode_token)
         try:
             tpm = int(tpm_str)
             rpm = int(rpm_str)
@@ -175,9 +120,9 @@ def _parse_judge_flag(value: str) -> JudgeConfig:
                 f"Invalid rate limits in '{value}'. TPM and RPM must be integers."
             ) from None
         rate_limits = RateLimitsConfig(tokens_per_minute=tpm, requests_per_minute=rpm)
-        if len(parts) == max_idx + 1:
+        if len(parts) == 6:
             try:
-                max_tokens = int(parts[max_idx])
+                max_tokens = int(parts[5])
             except ValueError:
                 raise typer.BadParameter(
                     f"Invalid max_tokens in '{value}'. MAX_TOKENS must be an integer."
@@ -185,8 +130,7 @@ def _parse_judge_flag(value: str) -> JudgeConfig:
     else:
         raise typer.BadParameter(
             f"Invalid judge format '{value}'. "
-            "Use MODEL:PROVIDER:MODE[:TPM:RPM[:MAX_TOKENS]] "
-            "(legacy forms are still accepted)."
+            "Use MODEL:PROVIDER:MODE[:TPM:RPM[:MAX_TOKENS]]."
         )
 
     if rate_limits is not None and mode == "batch":
@@ -313,7 +257,7 @@ def _print_dry_run(
     """Print a dry-run summary and exit."""
     from adele_runner.utils.io import build_dedup_index
 
-    mode = cfg.resolve_inference_mode()
+    inference_plan = resolve_inference_plan(cfg)
     model = cfg.inference.model
 
     console.print("\n[bold cyan]--- Dry-Run Summary ---[/bold cyan]")
@@ -324,7 +268,10 @@ def _print_dry_run(
     if items_count is not None:
         console.print(f"  Items loaded:   {items_count}")
     console.print(f"  Provider:       {cfg.inference.provider}")
-    console.print(f"  Mode:           {cfg.inference.mode} (effective transport={mode})")
+    console.print(
+        f"  Mode:           {cfg.inference.mode} "
+        f"(effective transport={inference_plan.binding.execution_kind})"
+    )
     console.print(f"  Model:          {model}")
 
     # Dedup info
@@ -354,8 +301,12 @@ def _print_dry_run(
         console.print(
             f"  Rate limits:    TPM={rl.tokens_per_minute:,}  RPM={rl.requests_per_minute:,}"
         )
-    judge_targets = resolve_judge_targets(cfg) if cfg.judging.enabled else []
-    judge_request_limits = [target.rate_limits for target in judge_targets if target.prompt_mode == "request_response" and target.rate_limits is not None]
+    judge_plans = resolve_judge_plans(cfg) if cfg.judging.enabled else []
+    judge_request_limits = [
+        plan.target.rate_limits
+        for plan in judge_plans
+        if plan.binding.execution_kind == "request_response" and plan.target.rate_limits is not None
+    ]
     if judge_request_limits:
         judge_rl = min(judge_request_limits, key=lambda rl: rl.tokens_per_minute)
         console.print(
@@ -418,7 +369,7 @@ def run_inference(
         _print_dry_run(
             cfg,
             items_count=len(items),
-            execution_settings=resolve_inference_execution_settings(cfg),
+            execution_settings=resolve_inference_plan(cfg).settings,
         )
         return
 
@@ -434,7 +385,7 @@ def run_judge(
         None,
         "--judge",
         "-j",
-        help="Judge model. Format: MODEL:PROVIDER:MODE[:TPM:RPM[:MAX_TOKENS]]. Legacy forms are still accepted.",
+        help="Judge model. Format: MODEL:PROVIDER:MODE[:TPM:RPM[:MAX_TOKENS]].",
     ),
     judge_template: str | None = typer.Option(
         None, "--judge-template", help="Judge prompt template: v1 or v2."
@@ -459,19 +410,16 @@ def run_judge(
     inference_outputs = read_jsonl(outputs_path, InferenceOutput)
 
     if dry_run:
-        request_targets = [
-            target for target in resolve_judge_targets(cfg) if target.prompt_mode == "request_response"
+        request_plans = [
+            plan for plan in resolve_judge_plans(cfg) if plan.binding.execution_kind == "request_response"
         ]
         _print_dry_run(
             cfg,
             items_count=len(inference_outputs),
             execution_settings=(
                 None
-                if not request_targets
-                else resolve_judge_execution_settings(
-                    cfg,
-                    max(request_targets, key=lambda target: target.max_tokens),
-                )
+                if not request_plans
+                else max(request_plans, key=lambda plan: plan.target.max_tokens).settings
             ),
         )
         return
@@ -531,7 +479,7 @@ def run_all(
         None,
         "--judge",
         "-j",
-        help="Judge model. Format: MODEL:PROVIDER:MODE[:TPM:RPM[:MAX_TOKENS]]. Legacy forms are still accepted.",
+        help="Judge model. Format: MODEL:PROVIDER:MODE[:TPM:RPM[:MAX_TOKENS]].",
     ),
     judge_template: str | None = typer.Option(
         None, "--judge-template", help="Judge prompt template: v1 or v2."
@@ -570,7 +518,7 @@ def run_all(
         _print_dry_run(
             cfg,
             items_count=len(items),
-            execution_settings=resolve_inference_execution_settings(cfg),
+            execution_settings=resolve_inference_plan(cfg).settings,
         )
         return
 

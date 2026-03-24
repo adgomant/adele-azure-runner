@@ -42,7 +42,7 @@ class GoogleGenAIBatchAdapter:
                 project=google_cfg.project,
                 location=google_cfg.location,
             )
-        return genai.Client(api_key=self._cfg.get_google_api_key())
+        return genai.Client(api_key=self._cfg.get_provider_api_key("google_genai"))
 
     def run_batch(
         self,

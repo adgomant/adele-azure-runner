@@ -6,11 +6,9 @@ import pytest
 
 from adele_runner.config import AppConfig
 from adele_runner.runtime.resolution import (
-    resolve_inference_binding,
-    resolve_inference_execution_settings,
+    resolve_inference_plan,
     resolve_inference_target,
-    resolve_judge_binding,
-    resolve_judge_execution_settings,
+    resolve_judge_plans,
     resolve_judge_targets,
 )
 
@@ -35,7 +33,7 @@ def test_resolve_inference_target_google_request_response():
     assert target.rate_limits is not None
 
 
-def test_resolve_inference_binding_azure_openai_batch():
+def test_resolve_inference_plan_azure_openai_batch():
     cfg = AppConfig.model_validate(
         {
             "targets": {"gpt-4o": {"batch_capable": True}},
@@ -47,11 +45,10 @@ def test_resolve_inference_binding_azure_openai_batch():
         }
     )
 
-    target = resolve_inference_target(cfg)
-    binding = resolve_inference_binding(cfg, target)
+    plan = resolve_inference_plan(cfg)
 
-    assert binding.provider_target.provider_kind == "azure_openai"
-    assert binding.execution_kind == "batch"
+    assert plan.binding.provider_target.provider_kind == "azure_openai"
+    assert plan.binding.execution_kind == "batch"
 
 
 def test_resolve_judge_targets_preserves_provider_mode_pairs():
@@ -99,13 +96,13 @@ def test_inference_execution_settings_auto_tune_without_mutating_config():
         }
     )
 
-    settings = resolve_inference_execution_settings(cfg)
+    plan = resolve_inference_plan(cfg)
 
-    assert settings.max_in_flight != 999
+    assert plan.settings.max_in_flight != 999
     assert cfg.concurrency.max_in_flight == 999
 
 
-def test_judge_execution_settings_use_target_specific_limits():
+def test_judge_plan_uses_target_specific_limits():
     cfg = AppConfig.model_validate(
         {
             "judging": {
@@ -124,11 +121,10 @@ def test_judge_execution_settings_use_target_specific_limits():
         }
     )
 
-    target = resolve_judge_targets(cfg)[0]
-    settings = resolve_judge_execution_settings(cfg, target)
+    plan = resolve_judge_plans(cfg)[0]
 
-    assert settings.max_in_flight != 999
-    assert settings.request_timeout_s >= 30.0
+    assert plan.settings.max_in_flight != 999
+    assert plan.settings.request_timeout_s >= 30.0
 
 
 def test_azure_ai_inference_batch_binding_rejected():
@@ -143,8 +139,7 @@ def test_azure_ai_inference_batch_binding_rejected():
     )
 
     with pytest.raises(ValueError, match="does not support batch mode"):
-        target = resolve_inference_target(cfg)
-        resolve_inference_binding(cfg, target)
+        resolve_inference_plan(cfg)
 
 
 def test_google_batch_binding_resolves_for_gemini_api():
@@ -159,29 +154,12 @@ def test_google_batch_binding_resolves_for_gemini_api():
         }
     )
 
-    target = resolve_inference_target(cfg)
-    binding = resolve_inference_binding(cfg, target)
+    plan = resolve_inference_plan(cfg)
 
-    assert binding.execution_kind == "batch"
-
-
-def test_legacy_mode_alias_normalizes_to_provider_plus_mode():
-    cfg = AppConfig.model_validate(
-        {
-            "inference": {
-                "mode": "foundry",
-                "model": "gpt-4o",
-            }
-        }
-    )
-
-    target = resolve_inference_target(cfg)
-
-    assert target.provider_kind == "azure_ai_inference"
-    assert target.requested_mode == "request_response"
+    assert plan.binding.execution_kind == "batch"
 
 
-def test_judge_binding_uses_target_provider_mode():
+def test_judge_plan_uses_target_provider_mode():
     cfg = AppConfig.model_validate(
         {
             "targets": {"claude-batch": {"supported_modes": ["batch"]}},
@@ -198,8 +176,7 @@ def test_judge_binding_uses_target_provider_mode():
         }
     )
 
-    target = resolve_judge_targets(cfg)[0]
-    binding = resolve_judge_binding(cfg, target)
+    plan = resolve_judge_plans(cfg)[0]
 
-    assert binding.provider_target.provider_kind == "anthropic"
-    assert binding.execution_kind == "batch"
+    assert plan.binding.provider_target.provider_kind == "anthropic"
+    assert plan.binding.execution_kind == "batch"

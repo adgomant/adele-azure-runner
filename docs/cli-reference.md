@@ -74,7 +74,6 @@ Notes:
 
 - TPM/RPM are only for request-response lanes
 - `MAX_TOKENS` is optional
-- legacy forms are still accepted and normalized
 
 ## `merge-results`
 
@@ -116,12 +115,6 @@ uv run adele-runner run-all \
   --judge gpt-4o:azure_openai:batch
 ```
 
-## Legacy CLI Aliases
+## Breaking Change
 
-The CLI still accepts older aliases for one release cycle:
-
-- `--provider foundry` -> `azure_ai_inference`
-- `--provider google` -> `google_genai`
-- `--mode foundry` -> `provider=azure_ai_inference`, `mode=request_response`
-- `--mode google` -> `provider=google_genai`, `mode=request_response`
-- `--mode batch` without an explicit provider -> `provider=azure_openai`, `mode=batch`
+Legacy CLI aliases and shorthand judge formats have been removed. Use explicit provider and mode values everywhere.

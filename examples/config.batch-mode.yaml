@@ -2,7 +2,7 @@
 #
 # Usage:
 #   cp examples/config.batch-mode.yaml config.yaml
-#   export AZURE_AI_API_KEY="<your-foundry-key>"
+#   export AZURE_AI_API_KEY="<your-azure-ai-inference-key>"
 #   export AZURE_OPENAI_API_KEY="<your-aoai-key>"
 #   uv run adele-runner run-all --model gpt-4o
 

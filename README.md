@@ -93,7 +93,7 @@ All outputs are written to `runs/<run_id>/`:
 
 | Guide | Contents |
 |---|---|
-| [Configuration](docs/configuration.md) | `providers.*`, targets, inference, judges, validation, and compatibility |
+| [Configuration](docs/configuration.md) | `providers.*`, targets, inference, judges, and validation |
 | [CLI Reference](docs/cli-reference.md) | Commands, `--provider`, `--mode`, and judge grammar |
 | [Architecture](docs/architecture.md) | Provider registry, transport contracts, stages, and executors |
 | [Judging](docs/judging.md) | Judge config, parsing, and mixed-mode execution |

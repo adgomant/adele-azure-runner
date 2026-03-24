@@ -31,10 +31,6 @@ src/adele_runner/
       azure_openai/
       google_genai/
       anthropic/
-    foundry.py
-    google_genai.py
-    azure_openai.py
-    factory.py
 
   runtime/
     types.py

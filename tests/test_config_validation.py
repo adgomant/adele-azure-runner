@@ -90,23 +90,7 @@ def test_valid_prompt_templates():
         assert not any("template" in error.lower() for error in errors)
 
 
-def test_legacy_root_fields_normalize_into_providers():
-    cfg = _cfg(
-        azure={
-            "foundry": {"endpoint": "https://foundry.example"},
-            "batch": {"endpoint": "https://openai.example", "api_version": "2024-10-21"},
-        },
-        google={"api_key_env": "GEMINI_API_KEY"},
-        inference={"mode": "foundry", "model": "gpt-4o"},
-        judging={"enabled": False},
-    )
-    assert cfg.providers.azure_ai_inference.endpoint == "https://foundry.example"
-    assert cfg.providers.azure_openai.endpoint == "https://openai.example"
-    assert cfg.providers.google_genai.api_key_env == "GEMINI_API_KEY"
-
-
 def test_batch_limits_default_values():
     cfg = _cfg()
     assert cfg.providers.azure_openai.max_requests_per_file == 50_000
     assert cfg.providers.azure_openai.max_bytes_per_file == 100_000_000
-

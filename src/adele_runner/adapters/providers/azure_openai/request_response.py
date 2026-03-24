@@ -36,7 +36,7 @@ class AzureOpenAIRequestResponseAdapter:
 
         return AzureOpenAI(
             azure_endpoint=self._cfg.providers.azure_openai.endpoint,
-            api_key=self._cfg.get_batch_api_key(),
+            api_key=self._cfg.get_provider_api_key("azure_openai"),
             api_version=self._cfg.providers.azure_openai.api_version,
         )
 
@@ -87,4 +87,3 @@ class AzureOpenAIRequestResponseAdapter:
             raw_output=(choice.message.content or "") if choice.message else "",
             metadata=dict(request.metadata),
         )
-

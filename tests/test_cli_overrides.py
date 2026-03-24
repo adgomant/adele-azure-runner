@@ -32,13 +32,6 @@ def test_inference_provider_and_mode_override():
     assert cfg.inference.model == "gpt-4o"
 
 
-def test_legacy_mode_alias_normalizes_to_provider_and_mode():
-    cfg = _base_config()
-    apply_cli_overrides(cfg, mode="foundry")
-    assert cfg.inference.provider == "azure_ai_inference"
-    assert cfg.inference.mode == "request_response"
-
-
 def test_invalid_provider_raises():
     cfg = _base_config()
     with pytest.raises(typer.BadParameter):
@@ -49,12 +42,6 @@ def test_invalid_mode_raises():
     cfg = _base_config()
     with pytest.raises(typer.BadParameter):
         apply_cli_overrides(cfg, mode="invalid")
-
-
-def test_legacy_mode_conflicts_with_explicit_provider():
-    cfg = _base_config()
-    with pytest.raises(typer.BadParameter):
-        apply_cli_overrides(cfg, provider="anthropic", mode="foundry")
 
 
 def test_tpm_rpm_overrides_inference_rate_limits():
@@ -80,12 +67,10 @@ def test_single_judge_new_format():
     assert judge.mode == "request_response"
 
 
-def test_single_judge_legacy_batch_format():
+def test_single_judge_without_mode_raises():
     cfg = _base_config()
-    apply_cli_overrides(cfg, judges=["gpt-4o:batch"])
-    judge = cfg.judging.judges[0]
-    assert judge.provider == "azure_openai"
-    assert judge.mode == "batch"
+    with pytest.raises(typer.BadParameter, match="Use MODEL:PROVIDER:MODE"):
+        apply_cli_overrides(cfg, judges=["gpt-4o:azure_openai"])
 
 
 def test_judge_with_rate_limits_new_format():
@@ -123,11 +108,7 @@ def test_judges_replace_config():
     assert cfg.judging.judges[0].name == "new-model"
 
 
-def test_judge_legacy_foundry_with_rate_limits():
+def test_judge_legacy_foundry_with_rate_limits_raises():
     cfg = _base_config()
-    apply_cli_overrides(cfg, judges=["gpt-4o:foundry:80000:300"])
-    judge = cfg.judging.judges[0]
-    assert judge.provider == "azure_ai_inference"
-    assert judge.mode == "request_response"
-    assert judge.rate_limits is not None
-
+    with pytest.raises(typer.BadParameter):
+        apply_cli_overrides(cfg, judges=["gpt-4o:foundry:80000:300"])

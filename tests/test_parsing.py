@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from adele_runner.pipeline.judge_runner import parse_judge_json
+from adele_runner.stages.judging import parse_judge_json
 
 
 def test_parse_clean_json():

@@ -7,9 +7,10 @@ from adele_runner.runtime.registry import bind_mode
 from adele_runner.runtime.types import (
     ExecutionKind,
     ExecutionSettings,
+    ResolvedInferencePlan,
     ResolvedInferenceTarget,
+    ResolvedJudgePlan,
     ResolvedJudgeTarget,
-    ResolvedModeBinding,
     ResolvedProviderTarget,
 )
 
@@ -85,10 +86,6 @@ def resolve_inference_target(config: AppConfig) -> ResolvedInferenceTarget:
     )
 
 
-def resolve_inference_binding(config: AppConfig, target: ResolvedInferenceTarget) -> ResolvedModeBinding:
-    return bind_mode(config, target.provider_target, target.requested_mode)
-
-
 def resolve_judge_targets(config: AppConfig) -> list[ResolvedJudgeTarget]:
     targets: list[ResolvedJudgeTarget] = []
     for judge in config.judging.judges:
@@ -112,10 +109,6 @@ def resolve_judge_targets(config: AppConfig) -> list[ResolvedJudgeTarget]:
     return targets
 
 
-def resolve_judge_binding(config: AppConfig, target: ResolvedJudgeTarget) -> ResolvedModeBinding:
-    return bind_mode(config, target.provider_target, target.requested_mode)
-
-
 def resolve_execution_settings_for_target(
     config: AppConfig,
     execution_kind: ExecutionKind,
@@ -132,20 +125,27 @@ def resolve_execution_settings_for_target(
     return build_execution_settings(config.concurrency)
 
 
-def resolve_inference_execution_settings(config: AppConfig) -> ExecutionSettings:
+def resolve_inference_plan(config: AppConfig) -> ResolvedInferencePlan:
     target = resolve_inference_target(config)
-    return resolve_execution_settings_for_target(
+    binding = bind_mode(config, target.provider_target, target.requested_mode)
+    settings = resolve_execution_settings_for_target(
         config,
-        target.prompt_mode,
+        binding.execution_kind,
         rate_limits=target.rate_limits,
         max_tokens=target.max_tokens,
     )
+    return ResolvedInferencePlan(target=target, binding=binding, settings=settings)
 
 
-def resolve_judge_execution_settings(config: AppConfig, target: ResolvedJudgeTarget) -> ExecutionSettings:
-    return resolve_execution_settings_for_target(
-        config,
-        target.prompt_mode,
-        rate_limits=target.rate_limits,
-        max_tokens=target.max_tokens,
-    )
+def resolve_judge_plans(config: AppConfig) -> list[ResolvedJudgePlan]:
+    plans: list[ResolvedJudgePlan] = []
+    for target in resolve_judge_targets(config):
+        binding = bind_mode(config, target.provider_target, target.requested_mode)
+        settings = resolve_execution_settings_for_target(
+            config,
+            binding.execution_kind,
+            rate_limits=target.rate_limits,
+            max_tokens=target.max_tokens,
+        )
+        plans.append(ResolvedJudgePlan(target=target, binding=binding, settings=settings))
+    return plans

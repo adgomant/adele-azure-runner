@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from adele_runner.config import (
-    AppConfig,
-    RateLimitsConfig,
-    compute_concurrency_from_rate_limits,
-)
+from adele_runner.config import AppConfig, RateLimitsConfig, compute_concurrency_from_rate_limits
+from adele_runner.runtime.resolution import build_execution_settings
 
 # ---------------------------------------------------------------------------
 # compute_concurrency_from_rate_limits
@@ -80,16 +77,11 @@ def test_no_crash_various_inputs(tpm: int, rpm: int, max_tokens: int):
     assert cc.request_timeout_s >= 30.0
 
 
-# ---------------------------------------------------------------------------
-# apply_rate_limit_overrides
-# ---------------------------------------------------------------------------
-
-
 def _cfg(**overrides) -> AppConfig:
     return AppConfig.model_validate(overrides)
 
 
-def test_apply_overrides_with_rate_limits():
+def test_build_execution_settings_with_rate_limits():
     cfg = _cfg(
         inference={
             "model": "m",
@@ -97,23 +89,24 @@ def test_apply_overrides_with_rate_limits():
             "rate_limits": {"tokens_per_minute": 80_000, "requests_per_minute": 300},
         },
     )
-    cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, cfg.inference.max_tokens)
-    # Should have been overridden (may differ from default 16)
-    assert cfg.concurrency.max_in_flight >= 1
-    assert cfg.concurrency.request_timeout_s >= 30.0
+    settings = build_execution_settings(
+        cfg.concurrency,
+        rate_limits=cfg.inference.rate_limits,
+        max_tokens=cfg.inference.max_tokens,
+    )
+    assert settings.max_in_flight >= 1
+    assert settings.request_timeout_s >= 30.0
 
 
-def test_apply_overrides_without_rate_limits():
+def test_build_execution_settings_without_rate_limits():
     cfg = _cfg(
         inference={"model": "m"},
     )
-    original = cfg.concurrency.max_in_flight
-    cfg.apply_rate_limit_overrides()
-    # No rate limits → no change
-    assert cfg.concurrency.max_in_flight == original
+    settings = build_execution_settings(cfg.concurrency)
+    assert settings.max_in_flight == cfg.concurrency.max_in_flight
 
 
-def test_apply_overrides_preserves_max_retries():
+def test_build_execution_settings_preserves_non_rate_limit_fields():
     cfg = _cfg(
         inference={
             "model": "m",
@@ -122,13 +115,16 @@ def test_apply_overrides_preserves_max_retries():
         },
         concurrency={"max_retries": 10, "max_poll_time_s": 7200.0},
     )
-    cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, cfg.inference.max_tokens)
-    # Non-rate-limit params should be preserved
-    assert cfg.concurrency.max_retries == 10
-    assert cfg.concurrency.max_poll_time_s == 7200.0
+    settings = build_execution_settings(
+        cfg.concurrency,
+        rate_limits=cfg.inference.rate_limits,
+        max_tokens=cfg.inference.max_tokens,
+    )
+    assert settings.max_retries == 10
+    assert settings.max_poll_time_s == 7200.0
 
 
-def test_apply_overrides_with_explicit_max_tokens():
+def test_build_execution_settings_with_explicit_max_tokens():
     """When max_tokens is passed explicitly, it overrides the config value."""
     cfg = _cfg(
         inference={
@@ -137,29 +133,8 @@ def test_apply_overrides_with_explicit_max_tokens():
             "rate_limits": {"tokens_per_minute": 80_000, "requests_per_minute": 300},
         },
     )
-    cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, max_tokens=512)
-    # With max_tokens=512 the concurrency should be higher than with 50_000
-    assert cfg.concurrency.max_in_flight >= 1
-
-
-def test_apply_overrides_for_judge_rate_limits():
-    """Judge rate limits should tune concurrency using the largest judge max_tokens."""
-    cfg = _cfg(
-        judging={
-            "judges": [
-                {
-                    "name": "j1",
-                    "provider": "foundry",
-                    "model": "m1",
-                    "rate_limits": {"tokens_per_minute": 80_000, "requests_per_minute": 300},
-                },
-            ]
-        },
-    )
-    judge_rl = cfg.get_most_restrictive_judge_rate_limits()
-    cfg.apply_rate_limit_overrides(judge_rl, max_tokens=cfg.get_max_judge_max_tokens())
-    assert cfg.concurrency.max_in_flight >= 1
-    assert cfg.concurrency.request_timeout_s >= 30.0
+    settings = build_execution_settings(cfg.concurrency, rate_limits=cfg.inference.rate_limits, max_tokens=512)
+    assert settings.max_in_flight >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +146,7 @@ def test_get_max_judge_max_tokens_default():
     cfg = _cfg(
         judging={
             "judges": [
-                {"name": "j1", "provider": "foundry", "model": "m1"},
+                {"name": "j1", "provider": "azure_ai_inference", "mode": "request_response", "model": "m1"},
             ]
         },
     )
@@ -182,8 +157,8 @@ def test_get_max_judge_max_tokens_uses_largest():
     cfg = _cfg(
         judging={
             "judges": [
-                {"name": "j1", "provider": "foundry", "model": "m1", "max_tokens": 256},
-                {"name": "j2", "provider": "foundry", "model": "m2", "max_tokens": 1024},
+                {"name": "j1", "provider": "azure_ai_inference", "mode": "request_response", "model": "m1", "max_tokens": 256},
+                {"name": "j2", "provider": "azure_ai_inference", "mode": "request_response", "model": "m2", "max_tokens": 1024},
             ]
         },
     )
@@ -194,19 +169,19 @@ def test_get_max_judge_max_tokens_ignores_batch():
     cfg = _cfg(
         judging={
             "judges": [
-                {"name": "j1", "provider": "foundry", "model": "m1", "max_tokens": 256},
-                {"name": "j2", "provider": "batch", "model": "m2", "max_tokens": 2048},
+                {"name": "j1", "provider": "azure_ai_inference", "mode": "request_response", "model": "m1", "max_tokens": 256},
+                {"name": "j2", "provider": "azure_openai", "mode": "batch", "model": "m2", "max_tokens": 2048},
             ]
         },
     )
     assert cfg.get_max_judge_max_tokens() == 256
 
 
-def test_get_max_judge_max_tokens_no_foundry_judges():
+def test_get_max_judge_max_tokens_no_request_response_judges():
     cfg = _cfg(
         judging={
             "judges": [
-                {"name": "j1", "provider": "batch", "model": "m1"},
+                {"name": "j1", "provider": "azure_openai", "mode": "batch", "model": "m1"},
             ]
         },
     )
