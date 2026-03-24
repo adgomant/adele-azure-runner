@@ -1,14 +1,17 @@
-"""Internal transport and resolution contracts."""
+"""Internal transport and runtime contracts."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from adele_runner.config import RateLimitsConfig
+if TYPE_CHECKING:
+    from adele_runner.config import RateLimitsConfig
 
-AdapterKind = Literal["foundry", "google_genai", "azure_openai"]
+ProviderKind = Literal["azure_openai", "azure_ai_inference", "google_genai", "anthropic"]
 ExecutionKind = Literal["request_response", "batch"]
+ExecutionMode = Literal["request_response", "batch", "auto"]
 MessageRole = Literal["system", "user", "assistant"]
 
 
@@ -49,7 +52,7 @@ class ChatResponse:
 
 @dataclass(frozen=True, slots=True)
 class AdapterCapabilities:
-    """Capabilities exposed by a provider adapter."""
+    """Capabilities exposed by a provider mode adapter."""
 
     request_response: bool = False
     batch: bool = False
@@ -70,16 +73,56 @@ class ExecutionSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class CapabilityResolution:
+    """Result of validating whether a target supports a mode."""
+
+    supported: bool
+    reason: str | None = None
+    resolved_mode: ExecutionKind | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedProviderTarget:
+    """Provider-specific target resolved from public config."""
+
+    provider_kind: ProviderKind
+    model: str
+    rate_limits: RateLimitsConfig | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedModeBinding:
+    """Mode binding resolved from provider descriptor + capability checks."""
+
+    provider_target: ResolvedProviderTarget
+    execution_kind: ExecutionKind
+    create_adapter: Callable[..., Any]
+    capability_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedInferenceTarget:
     """Internal inference target resolved from the public config surface."""
 
-    adapter_kind: AdapterKind
-    execution_kind: ExecutionKind
-    model: str
+    provider_target: ResolvedProviderTarget
+    requested_mode: ExecutionMode
+    prompt_mode: ExecutionKind
     temperature: float
     max_tokens: int
     top_p: float
-    rate_limits: RateLimitsConfig | None = None
+
+    @property
+    def model(self) -> str:
+        return self.provider_target.model
+
+    @property
+    def provider_kind(self) -> ProviderKind:
+        return self.provider_target.provider_kind
+
+    @property
+    def rate_limits(self) -> RateLimitsConfig | None:
+        return self.provider_target.rate_limits
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,10 +130,20 @@ class ResolvedJudgeTarget:
     """Internal judge target resolved from the public config surface."""
 
     judge_name: str
-    adapter_kind: AdapterKind
-    execution_kind: ExecutionKind
-    model: str
+    provider_target: ResolvedProviderTarget
+    requested_mode: ExecutionMode
+    prompt_mode: ExecutionKind
     prompt_template: str
     max_tokens: int
-    rate_limits: RateLimitsConfig | None = None
 
+    @property
+    def model(self) -> str:
+        return self.provider_target.model
+
+    @property
+    def provider_kind(self) -> ProviderKind:
+        return self.provider_target.provider_kind
+
+    @property
+    def rate_limits(self) -> RateLimitsConfig | None:
+        return self.provider_target.rate_limits

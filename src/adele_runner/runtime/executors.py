@@ -8,9 +8,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
-from adele_runner.adapters.factory import build_batch_adapter, build_request_response_adapter
-from adele_runner.config import AppConfig, RateLimitsConfig
-from adele_runner.runtime.types import AdapterKind, ChatRequest, ChatResponse, ExecutionSettings
+from adele_runner.config import RateLimitsConfig
+from adele_runner.runtime.types import ChatRequest, ChatResponse, ExecutionSettings
 from adele_runner.utils.concurrency import AsyncRateLimiter, bounded_gather
 from adele_runner.utils.retry import make_retry_decorator
 
@@ -36,6 +35,19 @@ class BatchTransport(Protocol):
     ) -> list[ChatResponse]: ...
 
 
+def create_rate_limiter(
+    settings: ExecutionSettings,
+    rate_limits: RateLimitsConfig | None,
+) -> AsyncRateLimiter | None:
+    """Create a request pacing limiter for a lane if needed."""
+    if settings.effective_rpm is None:
+        return None
+    return AsyncRateLimiter(
+        settings.effective_rpm,
+        tpm=rate_limits.tokens_per_minute if rate_limits else None,
+    )
+
+
 async def _send_with_retry(
     adapter: RequestResponseTransport,
     request: ChatRequest,
@@ -52,39 +64,18 @@ async def _send_with_retry(
 class RequestResponseExecutor:
     """Shared executor for async request-response transports."""
 
-    def __init__(self, config: AppConfig) -> None:
-        self._config = config
-
     async def execute(
         self,
         *,
-        adapter_kind: AdapterKind,
+        adapter: RequestResponseTransport,
         requests: list[ChatRequest],
         settings: ExecutionSettings,
-        rate_limits: RateLimitsConfig | None = None,
+        rate_limiter: AsyncRateLimiter | None = None,
         on_result: ExecutionCallback | None = None,
     ) -> list[ChatResponse]:
         if not requests:
             return []
 
-        rate_limiter: AsyncRateLimiter | None = None
-        if settings.effective_rpm is not None:
-            rate_limiter = AsyncRateLimiter(
-                settings.effective_rpm,
-                tpm=rate_limits.tokens_per_minute if rate_limits else None,
-            )
-            logger.info(
-                "Rate limiter enabled for %s: %d RPM",
-                adapter_kind,
-                settings.effective_rpm,
-            )
-
-        adapter = build_request_response_adapter(
-            adapter_kind,
-            self._config,
-            rate_limiter=rate_limiter,
-            configured_rate_limits=rate_limits,
-        )
         retry_dec = make_retry_decorator(
             max_retries=settings.max_retries,
             backoff_base=settings.backoff_base_s,
@@ -120,13 +111,10 @@ class RequestResponseExecutor:
 class BatchExecutor:
     """Shared executor for blocking batch transports."""
 
-    def __init__(self, config: AppConfig) -> None:
-        self._config = config
-
     async def execute(
         self,
         *,
-        adapter_kind: AdapterKind,
+        adapter: BatchTransport,
         requests: list[ChatRequest],
         run_dir: Path,
         settings: ExecutionSettings,
@@ -135,7 +123,6 @@ class BatchExecutor:
         if not requests:
             return []
 
-        adapter = build_batch_adapter(adapter_kind, self._config)
         responses = await asyncio.to_thread(adapter.run_batch, requests, run_dir, settings)
         for response in responses:
             if on_result is not None:

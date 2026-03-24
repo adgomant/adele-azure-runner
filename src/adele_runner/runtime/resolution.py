@@ -1,12 +1,16 @@
-"""Resolve public config into internal targets and execution settings."""
+"""Resolve public config into internal targets, bindings, and execution settings."""
 
 from __future__ import annotations
 
 from adele_runner.config import AppConfig, ConcurrencyConfig, compute_concurrency_from_rate_limits
+from adele_runner.runtime.registry import bind_mode
 from adele_runner.runtime.types import (
+    ExecutionKind,
     ExecutionSettings,
     ResolvedInferenceTarget,
     ResolvedJudgeTarget,
+    ResolvedModeBinding,
+    ResolvedProviderTarget,
 )
 
 
@@ -29,7 +33,6 @@ def build_execution_settings(
     rate_limits=None,  # type: ignore[no-untyped-def]
     max_tokens: int | None = None,
 ) -> ExecutionSettings:
-    """Build per-stage execution settings without mutating the config."""
     if rate_limits is None:
         return _settings_from_concurrency(base)
 
@@ -40,93 +43,109 @@ def build_execution_settings(
     return _settings_from_concurrency(computed)
 
 
-def resolve_inference_target(config: AppConfig) -> ResolvedInferenceTarget:
-    """Resolve the configured inference lane."""
-    mode = config.resolve_inference_mode()
-    if mode == "batch":
-        return ResolvedInferenceTarget(
-            adapter_kind="azure_openai",
-            execution_kind="batch",
-            model=config.inference.model,
-            temperature=config.inference.temperature,
-            max_tokens=config.inference.max_tokens,
-            top_p=config.inference.top_p,
-            rate_limits=None,
-        )
-    if mode == "google":
-        return ResolvedInferenceTarget(
-            adapter_kind="google_genai",
-            execution_kind="request_response",
-            model=config.inference.model,
-            temperature=config.inference.temperature,
-            max_tokens=config.inference.max_tokens,
-            top_p=config.inference.top_p,
-            rate_limits=config.inference.rate_limits,
-        )
-    return ResolvedInferenceTarget(
-        adapter_kind="foundry",
-        execution_kind="request_response",
-        model=config.inference.model,
-        temperature=config.inference.temperature,
-        max_tokens=config.inference.max_tokens,
-        top_p=config.inference.top_p,
-        rate_limits=config.inference.rate_limits,
+def _provider_target_from_config(
+    config: AppConfig,
+    *,
+    provider_kind,
+    model: str,
+    rate_limits=None,  # type: ignore[no-untyped-def]
+) -> ResolvedProviderTarget:
+    target_cfg = config.get_target_config(model)
+    metadata: dict[str, object] = {}
+    if target_cfg is not None:
+        if target_cfg.supported_modes is not None:
+            metadata["supported_modes"] = list(target_cfg.supported_modes)
+        if target_cfg.batch_capable is not None:
+            metadata["batch_capable"] = target_cfg.batch_capable
+        if target_cfg.deployment_type is not None:
+            metadata["deployment_type"] = target_cfg.deployment_type
+    return ResolvedProviderTarget(
+        provider_kind=provider_kind,
+        model=model,
+        rate_limits=rate_limits,
+        metadata=metadata,
     )
 
 
-def resolve_inference_execution_settings(config: AppConfig) -> ExecutionSettings:
-    """Resolve inference execution settings."""
-    target = resolve_inference_target(config)
-    if target.execution_kind == "request_response":
-        return build_execution_settings(
-            config.concurrency,
-            rate_limits=target.rate_limits,
-            max_tokens=target.max_tokens,
-        )
-    return build_execution_settings(config.concurrency)
+def resolve_inference_target(config: AppConfig) -> ResolvedInferenceTarget:
+    provider_target = _provider_target_from_config(
+        config,
+        provider_kind=config.inference.provider,
+        model=config.inference.model,
+        rate_limits=config.inference.rate_limits,
+    )
+    binding = bind_mode(config, provider_target, config.inference.mode)
+    return ResolvedInferenceTarget(
+        provider_target=provider_target,
+        requested_mode=config.inference.mode,
+        prompt_mode=binding.execution_kind,
+        temperature=config.inference.temperature,
+        max_tokens=config.inference.max_tokens,
+        top_p=config.inference.top_p,
+    )
+
+
+def resolve_inference_binding(config: AppConfig, target: ResolvedInferenceTarget) -> ResolvedModeBinding:
+    return bind_mode(config, target.provider_target, target.requested_mode)
 
 
 def resolve_judge_targets(config: AppConfig) -> list[ResolvedJudgeTarget]:
-    """Resolve configured judges into explicit internal targets."""
     targets: list[ResolvedJudgeTarget] = []
     for judge in config.judging.judges:
-        if judge.provider == "batch":
-            targets.append(
-                ResolvedJudgeTarget(
-                    judge_name=judge.name,
-                    adapter_kind="azure_openai",
-                    execution_kind="batch",
-                    model=judge.model,
-                    prompt_template=config.judging.prompt_template,
-                    max_tokens=judge.max_tokens,
-                    rate_limits=None,
-                )
-            )
-            continue
+        provider_target = _provider_target_from_config(
+            config,
+            provider_kind=judge.provider,
+            model=judge.model,
+            rate_limits=judge.rate_limits,
+        )
+        binding = bind_mode(config, provider_target, judge.mode)
         targets.append(
             ResolvedJudgeTarget(
                 judge_name=judge.name,
-                adapter_kind="foundry",
-                execution_kind="request_response",
-                model=judge.model,
+                provider_target=provider_target,
+                requested_mode=judge.mode,
+                prompt_mode=binding.execution_kind,
                 prompt_template=config.judging.prompt_template,
                 max_tokens=judge.max_tokens,
-                rate_limits=judge.rate_limits,
             )
         )
     return targets
 
 
-def resolve_judge_request_response_settings(config: AppConfig) -> ExecutionSettings:
-    """Resolve shared request-response settings for the judge stage."""
-    return build_execution_settings(
-        config.concurrency,
-        rate_limits=config.get_most_restrictive_judge_rate_limits(),
-        max_tokens=config.get_max_judge_max_tokens(),
+def resolve_judge_binding(config: AppConfig, target: ResolvedJudgeTarget) -> ResolvedModeBinding:
+    return bind_mode(config, target.provider_target, target.requested_mode)
+
+
+def resolve_execution_settings_for_target(
+    config: AppConfig,
+    execution_kind: ExecutionKind,
+    *,
+    rate_limits=None,  # type: ignore[no-untyped-def]
+    max_tokens: int | None = None,
+) -> ExecutionSettings:
+    if execution_kind == "request_response":
+        return build_execution_settings(
+            config.concurrency,
+            rate_limits=rate_limits,
+            max_tokens=max_tokens,
+        )
+    return build_execution_settings(config.concurrency)
+
+
+def resolve_inference_execution_settings(config: AppConfig) -> ExecutionSettings:
+    target = resolve_inference_target(config)
+    return resolve_execution_settings_for_target(
+        config,
+        target.prompt_mode,
+        rate_limits=target.rate_limits,
+        max_tokens=target.max_tokens,
     )
 
 
-def resolve_batch_execution_settings(config: AppConfig) -> ExecutionSettings:
-    """Resolve settings for batch execution lanes."""
-    return build_execution_settings(config.concurrency)
-
+def resolve_judge_execution_settings(config: AppConfig, target: ResolvedJudgeTarget) -> ExecutionSettings:
+    return resolve_execution_settings_for_target(
+        config,
+        target.prompt_mode,
+        rate_limits=target.rate_limits,
+        max_tokens=target.max_tokens,
+    )

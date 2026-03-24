@@ -1,290 +1,236 @@
 # Configuration Reference
 
-ADeLe Runner loads configuration from a YAML file and optionally overrides values with CLI flags.
+The public config now models runtime selection explicitly:
+
+- `provider`: which SDK to use
+- `mode`: how to query that SDK
+
+This applies to both inference and judging.
 
 ## Loading Order
 
-1. **`.env` files** -- environment variables are loaded from `.env.local` and `.env` at CLI startup (before any config is read). `.env.local` values take priority over `.env`. Shell-exported variables are never overwritten
-2. **YAML file** -- `config.yaml` by default, or the path given via `--config / -c`
-3. **CLI overrides** -- flags like `--model`, `--mode`, `--judge`, `--judge-template` mutate the loaded config in-place
-4. **Environment variables** -- API keys are read from env vars named in the config (never stored in the YAML)
+1. `.env.local` and `.env`
+2. YAML config file
+3. CLI overrides
+4. API keys are read from the env var names stored in config
 
-If no `--config` is provided and `config.yaml` does not exist in the working directory, the CLI exits with an error.
+## Top-Level Sections
 
-### `.env` files
+- `providers`
+- `run`
+- `dataset`
+- `targets`
+- `inference`
+- `concurrency`
+- `judging`
+- `logging`
+- `pricing`
 
-The CLI automatically loads environment variables from `.env.local` and `.env` in the working directory:
+## `providers`
 
-| File | Purpose | Git-tracked? |
+### `providers.azure_ai_inference`
+
+| Field | Type | Default |
 |---|---|---|
-| `.env` | Placeholder template showing required variables | Yes (committed with placeholder values) |
-| `.env.local` | Your real API keys and secrets | No (gitignored) |
+| `endpoint` | `str` | `""` |
+| `api_key_env` | `str` | `AZURE_AI_API_KEY` |
 
-To get started, copy `.env` to `.env.local` and fill in your real keys:
+Supports `request_response` only.
 
-```bash
-cp .env .env.local
-# Edit .env.local with your actual API keys
-```
+### `providers.azure_openai`
 
-Precedence: **shell env** > `.env.local` > `.env`. Both files use `override=False`, so whichever value is set first wins.
+| Field | Type | Default |
+|---|---|---|
+| `endpoint` | `str` | `""` |
+| `api_key_env` | `str` | `AZURE_OPENAI_API_KEY` |
+| `api_version` | `str` | `""` |
+| `completion_endpoint` | `str` | `/chat/completions` |
+| `max_requests_per_file` | `int` | `50000` |
+| `max_bytes_per_file` | `int` | `100000000` |
 
-## Config Sections
+Supports `request_response` and `batch`, but batch requires target capability hints.
 
-### `azure`
+### `providers.google_genai`
 
-Connection settings for Azure services. Set once per environment.
+| Field | Type | Default |
+|---|---|---|
+| `api_key_env` | `str` | `GEMINI_API_KEY` |
+| `backend` | `gemini_api \| vertex_ai` | `gemini_api` |
+| `project` | `str` | `""` |
+| `location` | `str` | `""` |
 
-#### `azure.foundry`
+Supports `request_response` and `batch`.
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `endpoint` | `str` | `""` | Azure AI Foundry endpoint URL (e.g. `https://<resource>.services.ai.azure.com/models`) |
-| `api_key_env` | `str` | `"AZURE_AI_API_KEY"` | Name of the environment variable holding the API key |
+When `backend=vertex_ai`, both `project` and `location` are required.
 
-#### `azure.batch`
+### `providers.anthropic`
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `endpoint` | `str` | `""` | Azure OpenAI resource endpoint (e.g. `https://<resource>.openai.azure.com`) |
-| `api_key_env` | `str` | `"AZURE_OPENAI_API_KEY"` | Env var for the batch API key |
-| `api_version` | `str` | `""` | Azure OpenAI API version string |
-| `completion_endpoint` | `str` | `"/chat/completions"` | Completion endpoint path used in batch requests |
-| `max_requests_per_file` | `int` | `50000` | Maximum requests per batch file. Azure hard limit: 100,000 |
-| `max_bytes_per_file` | `int` | `100000000` | Maximum bytes per batch file (100 MB default). Azure hard limit: 200 MB |
+| Field | Type | Default |
+|---|---|---|
+| `api_key_env` | `str` | `ANTHROPIC_API_KEY` |
+| `base_url` | `str` | `""` |
 
-### `run`
+Supports `request_response` and `batch`.
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `run_id` | `str` | `"adele_run"` | Identifier for this run. Output directory becomes `runs/<run_id>/` |
-| `output_dir` | `str` | `"runs"` | Parent directory for all run outputs |
+## `targets`
 
-### `dataset`
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `name` | `str` | `"adele"` | Dataset name (for manifest metadata) |
-| `hf_id` | `str` | `"CFI-Kinds-of-Intelligence/ADeLe_battery_v1dot0"` | HuggingFace dataset identifier |
-| `split` | `str` | `"train"` | Dataset split to load |
-| `limit` | `int \| null` | `null` | Load only the first N items. `null` loads all |
-
-### `google`
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `api_key_env` | `str` | `"GEMINI_API_KEY"` | Environment variable to read for Gemini API access |
-
-### `inference`
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `mode` | `"auto" \| "foundry" \| "batch" \| "google"` | `"auto"` | Inference mode. See [Mode resolution](#mode-resolution) below |
-| `model` | `str` | `""` | Model name or deployment ID. Overridden by `--model` |
-| `temperature` | `float` | `0.0` | Sampling temperature |
-| `max_tokens` | `int` | `2048` | Maximum completion tokens |
-| `top_p` | `float` | `1.0` | Top-p (nucleus) sampling |
-| `rate_limits` | `object \| null` | `null` | Optional rate limits for auto-tuning concurrency in async modes (`foundry` and `google`) |
-
-##### `inference.rate_limits`
-
-When set and inference mode is `foundry` or `google`, concurrency parameters (`max_in_flight`, `request_timeout_s`, `backoff_base_s`, `backoff_max_s`) are automatically computed from the configured rate limits.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `tokens_per_minute` | `int` | *(required)* | TPM limit for this model/provider |
-| `requests_per_minute` | `int` | *(required)* | RPM limit for this model/provider |
-
-### `concurrency`
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `max_in_flight` | `int` | `16` | Maximum concurrent async requests |
-| `request_timeout_s` | `float` | `120.0` | Per-request HTTP timeout in seconds |
-| `max_retries` | `int` | `6` | Maximum retry attempts per request |
-| `backoff_base_s` | `float` | `1.0` | Exponential backoff base (seconds) |
-| `backoff_max_s` | `float` | `30.0` | Maximum backoff wait (seconds) |
-| `max_poll_time_s` | `float` | `3600.0` | Maximum time to poll a batch job before raising `TimeoutError` |
-| `batch_completion_window` | `str` | `"24h"` | Batch API completion window |
-
-### `judging`
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | `bool` | `true` | Enable the judging stage |
-| `prompt_template` | `str` | `"v1"` | Judge prompt template: `"v1"` (structured JSON) or `"v2"` (bare integer). See [Judging](judging.md) |
-| `judges` | `list` | `[]` | List of judge configurations (see below) |
-
-Each judge entry:
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `name` | `str` | *(required)* | Display name for this judge |
-| `provider` | `"foundry" \| "batch"` | `"foundry"` | Whether to use Foundry async or Azure OpenAI Batch API |
-| `model` | `str` | *(required)* | Model name or deployment to use for judging |
-| `max_tokens` | `int` | `512` | Maximum completion tokens for this judge |
-| `rate_limits` | `object \| null` | `null` | Optional per-judge rate limits (foundry judges only). Same structure as `inference.rate_limits` |
-
-### `logging`
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `level` | `str` | `"INFO"` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-
-### `pricing`
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | `bool` | `false` | Enable cost estimation in metrics summary |
-| `models` | `dict` | `{}` | Per-model pricing (see below) |
-
-Each model pricing entry (keyed by model name or judge name):
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `prompt_per_1k` | `float` | `0.0` | Cost in USD per 1,000 prompt tokens |
-| `completion_per_1k` | `float` | `0.0` | Cost in USD per 1,000 completion tokens |
-
-Cost estimation covers both inference and judging. Inference models are keyed by `inference.model` (the model name). Judge models are keyed by `judging.judges[].name` (the judge display name). For example:
+`targets` stores optional deployment capability metadata.
 
 ```yaml
-pricing:
-  enabled: true
-  models:
-    gpt-4o:                # inference model
-      prompt_per_1k: 2.50
-      completion_per_1k: 10.00
-    gpt4o:                 # judge (matches judging.judges[].name)
-      prompt_per_1k: 2.50
-      completion_per_1k: 10.00
+targets:
+  gpt-4o-batch:
+    supported_modes: [batch]
+    batch_capable: true
+    deployment_type: global_batch
 ```
+
+Fields:
+
+| Field | Type |
+|---|---|
+| `supported_modes` | `list[request_response \| batch] \| null` |
+| `batch_capable` | `bool \| null` |
+| `deployment_type` | `str \| null` |
+
+This is especially important for `azure_openai` batch validation.
+
+## `inference`
+
+| Field | Type | Default |
+|---|---|---|
+| `provider` | `azure_openai \| azure_ai_inference \| google_genai \| anthropic` | `azure_ai_inference` |
+| `mode` | `request_response \| batch \| auto` | `auto` |
+| `model` | `str` | `""` |
+| `temperature` | `float` | `0.0` |
+| `max_tokens` | `int` | `2048` |
+| `top_p` | `float` | `1.0` |
+| `rate_limits` | `object \| null` | `null` |
+
+`mode=auto` resolves within the chosen provider, not across providers.
+
+## `concurrency`
+
+| Field | Type | Default |
+|---|---|---|
+| `max_in_flight` | `int` | `16` |
+| `request_timeout_s` | `float` | `120.0` |
+| `max_retries` | `int` | `6` |
+| `backoff_base_s` | `float` | `1.0` |
+| `backoff_max_s` | `float` | `30.0` |
+| `max_poll_time_s` | `float` | `3600.0` |
+| `batch_completion_window` | `str` | `24h` |
+
+These are base values. The runtime resolves per-stage `ExecutionSettings` instead of mutating this object.
+
+## `judging`
+
+| Field | Type | Default |
+|---|---|---|
+| `enabled` | `bool` | `true` |
+| `prompt_template` | `v1 \| v2` | `v1` |
+| `judges` | `list` | `[]` |
+
+Each judge:
+
+| Field | Type | Default |
+|---|---|---|
+| `name` | `str` | required |
+| `provider` | provider enum | `azure_ai_inference` |
+| `mode` | `request_response \| batch \| auto` | `request_response` |
+| `model` | `str` | required |
+| `rate_limits` | `object \| null` | `null` |
+| `max_tokens` | `int` | `512` |
+
+`rate_limits` apply only to request-response judge lanes.
 
 ## Environment Variables
 
-| Variable | Config field | Used by |
-|---|---|---|
-| `AZURE_AI_API_KEY` | `azure.foundry.api_key_env` | Foundry inference and Foundry judges |
-| `AZURE_OPENAI_API_KEY` | `azure.batch.api_key_env` | Batch inference and Batch judges |
-| `GEMINI_API_KEY` | `google.api_key_env` | Gemini inference |
-
-The variable names are configurable. The runner reads the env var whose name is specified in the config, not a hardcoded name.
-
-> **Tip:** Instead of exporting variables in your shell, place them in a `.env.local` file in the project root. See [Loading Order](#loading-order) above.
-
-## Mode Resolution
-
-The `inference.mode` field determines how inference requests are dispatched:
-
-| `inference.mode` | Effective mode |
+| Variable | Typical config field |
 |---|---|
-| `"auto"` | `foundry` |
-| `"foundry"` | `foundry` |
-| `"batch"` | `batch` |
-| `"google"` | `google` |
+| `AZURE_AI_API_KEY` | `providers.azure_ai_inference.api_key_env` |
+| `AZURE_OPENAI_API_KEY` | `providers.azure_openai.api_key_env` |
+| `GEMINI_API_KEY` | `providers.google_genai.api_key_env` |
+| `ANTHROPIC_API_KEY` | `providers.anthropic.api_key_env` |
 
-CLI shorthand: `--mode foundry`, `--mode batch`, and `--mode google` set the mode directly.
+## Validation Rules
 
-## Config Validation
-
-The runner validates config before making API calls. Validation checks:
-
-- Foundry endpoint is set and does not contain `<YOUR-` placeholders (when using Foundry mode)
-- Batch endpoint is set when batch mode is active
-- Model is specified (`inference.model`)
-- At least one judge is configured when judging is enabled
-- `prompt_template` is `"v1"` or `"v2"`
-
-Use `--dry-run` to test config without hitting APIs. Dry-run skips API key validation.
-
-## Auto-tuning Concurrency
-
-When `inference.rate_limits` is configured and the inference mode is `foundry` or `google`, the runner automatically computes optimal concurrency parameters from TPM, RPM, and `inference.max_tokens`. This replaces the need to manually tune `concurrency.*` fields and helps avoid 429 (rate limit) errors.
-
-Rate-limit auto-tuning applies to the async providers (`foundry` and `google`). Batch mode uses a different strategy: requests are automatically split into chunks that respect configurable limits (`azure.batch.max_requests_per_file` and `azure.batch.max_bytes_per_file`). These default to 50K requests / 100 MB per file, well within Azure's hard limits of 100K requests / 200 MB.
-
-### Inference auto-tuning
-
-When `inference.rate_limits` is set and `inference.mode` resolves to `foundry` or `google`:
-
-1. **Effective RPM** = min(RPM, TPM / max_tokens) — the tighter constraint
-2. **max_in_flight** = effective_rpm x estimated_duration / 60, with 80% safety margin
-3. **request_timeout_s** = max_tokens / 50 + 10s overhead, capped 30-600s
-4. **backoff_base_s** = 60 / effective_rpm, capped 0.5-10s
-5. **backoff_max_s** = backoff_base x 10, capped 30-120s
-
-### Judge auto-tuning
-
-When foundry judges have `rate_limits` configured, the runner uses the **most restrictive** judge's rate limits to tune concurrency before the judging phase. The **largest** `max_tokens` among configured foundry judges is used for auto-tuning (worst-case token consumption). The default is `512` if no custom value is set.
-
-At runtime, inference and judging each resolve their own `ExecutionSettings`. The runner no longer rewrites shared `config.concurrency` between phases; it computes phase-local settings from the config when each stage starts.
-
-Non-rate-limit params (`max_retries`, `max_poll_time_s`, `batch_completion_window`) are preserved from the user config.
-
-### Example computed values
-
-| TPM | RPM | max_tokens | max_in_flight | timeout_s | backoff |
-|-----|-----|------------|---------------|-----------|---------|
-| 80k | 300 | 2048 | 17 | 51s | 1.5–15s |
-| 80k | 300 | 50000 | 2 | 600s | 0.5–30s |
-| 200k | 600 | 2048 | 42 | 51s | 0.6–30s |
-| 30k | 100 | 512 | 7 | 30s | 4.1–41s |
-
-### Runtime header validation
-
-On the first API response, the runner reads `x-ratelimit-limit-tokens` and `x-ratelimit-limit-requests` headers from Azure. If either value differs from the config by more than 20%, a warning is logged so you can update your config.
-
-### Retry-After awareness
-
-When a 429 response includes a `Retry-After` or `x-ratelimit-reset-tokens` header, the retry system uses that value instead of generic exponential backoff — avoiding both unnecessary waits and premature retries.
-
-## Annotated Example
-
-See [config.example.yaml](../config.example.yaml) for a fully annotated config file, or the [examples/](../examples/) directory for scenario-specific configs.
-
-## CLI Flags
-
-All CLI flags override the corresponding config-file values.
-
-### Global flags
-
-These flags go **before** the subcommand:
-
-```bash
-uv run adele-runner --run-id my_run run-inference --model gpt-4o
-```
-
-| Flag | Type | Description |
-|---|---|---|
-| `--run-id` / `-r` | `str` | Run ID. Overrides `run.run_id` in config |
-
-### Subcommand flags
-
-| Flag | Type | Commands | Description |
-|---|---|---|---|
-| `--config` / `-c` | `Path` | All | Path to YAML config file |
-| `--model` / `-m` | `str` | `run-inference`, `run-all` | Model name or deployment |
-| `--mode` | `str` | `run-inference`, `run-all` | Inference mode: `foundry`, `batch`, `google`, or `auto` |
-| `--tpm` | `int` | `run-inference`, `run-all` | Tokens per minute rate limit (requires `--rpm`) |
-| `--rpm` | `int` | `run-inference`, `run-all` | Requests per minute rate limit (requires `--tpm`) |
-| `--judge` / `-j` | `str` | `run-judge`, `run-all` | Judge model (repeatable). See format below |
-| `--judge-template` | `str` | `run-judge`, `run-all` | Judge prompt template: `v1` or `v2` |
-| `--dry-run` | `bool` | `run-inference`, `run-judge`, `run-all` | Print plan and exit without API calls |
-
-### `--judge` format
-
-```
-MODEL                              → foundry provider, no rate limits
-MODEL:PROVIDER                     → explicit provider (foundry or batch)
-MODEL:PROVIDER:TPM:RPM             → explicit provider + rate limits (foundry only)
-MODEL:PROVIDER:TPM:RPM:MAX_TOKENS  → provider + rate limits + max tokens (foundry only)
-```
+Validation happens before execution.
 
 Examples:
-```bash
---judge gpt-4o                          # foundry, no rate limits
---judge gpt-4o:batch                    # batch provider
---judge gpt-4o:foundry:80000:300        # foundry with TPM=80000 RPM=300
---judge gpt-4o:foundry:80000:300:1024   # foundry with rate limits + max_tokens=1024
+
+- `azure_ai_inference + batch` is rejected
+- `azure_openai + batch` requires target metadata proving batch capability
+- `google_genai + vertex_ai` requires `project` and `location`
+- inference requires a model
+- judging requires at least one judge when enabled
+
+Use `--dry-run` to validate a plan without making API calls.
+
+## Rate-Limit Auto-Tuning
+
+When request-response `rate_limits` are set, the runner computes stage-local execution settings from:
+
+- TPM
+- RPM
+- `max_tokens`
+
+That affects:
+
+- `effective_rpm`
+- `max_in_flight`
+- `request_timeout_s`
+- retry backoff
+
+Batch lanes do not use request-response rate limiting.
+
+## Example
+
+```yaml
+providers:
+  azure_ai_inference:
+    endpoint: "https://my-foundry.services.ai.azure.com/models"
+  azure_openai:
+    endpoint: "https://my-openai-resource.openai.azure.com"
+    api_version: "2024-10-21"
+  google_genai:
+    backend: gemini_api
+  anthropic:
+    api_key_env: ANTHROPIC_API_KEY
+
+targets:
+  gpt-4o-batch:
+    supported_modes: [batch]
+    batch_capable: true
+    deployment_type: global_batch
+
+inference:
+  provider: azure_ai_inference
+  mode: request_response
+  model: gpt-4o
+  rate_limits:
+    tokens_per_minute: 80000
+    requests_per_minute: 300
+
+judging:
+  enabled: true
+  prompt_template: v1
+  judges:
+    - name: gpt4o-judge
+      provider: azure_ai_inference
+      mode: request_response
+      model: gpt-4o
+    - name: claude-batch
+      provider: anthropic
+      mode: batch
+      model: claude-sonnet-4-5
 ```
 
-Rate limits for batch judges are not supported (batch uses file splitting instead). Providing TPM/RPM for a batch judge is an error.
+## Legacy Compatibility
+
+The runner still accepts older config for one release cycle:
+
+- `inference.mode=foundry|google|batch`
+- judge `provider=foundry|batch`
+- `azure.foundry`, `azure.batch`, and `google` top-level config blocks
+
+They are normalized immediately into the new config model and should be treated as deprecated.

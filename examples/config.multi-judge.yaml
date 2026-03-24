@@ -1,4 +1,4 @@
-# Config with multiple judges (mixed Foundry + Batch), v2 template, and pricing.
+# Config with multiple judges across request-response and batch modes, v2 template, and pricing.
 #
 # Usage:
 #   cp examples/config.multi-judge.yaml config.yaml
@@ -6,14 +6,19 @@
 #   export AZURE_OPENAI_API_KEY="<your-aoai-key>"
 #   uv run adele-runner run-all --model gpt-4o
 
-azure:
-  foundry:
+providers:
+  azure_ai_inference:
     endpoint: "https://<YOUR-RESOURCE>.services.ai.azure.com/models"
     api_key_env: "AZURE_AI_API_KEY"
-  batch:
+  azure_openai:
     endpoint: "https://<YOUR-AOAI-RESOURCE>.openai.azure.com"
     api_key_env: "AZURE_OPENAI_API_KEY"
     api_version: "<API_VERSION>"
+
+targets:
+  gpt-4o-batch:
+    supported_modes: ["batch"]
+    batch_capable: true
 
 run:
   run_id: "multi_judge_run"
@@ -25,6 +30,7 @@ dataset:
   limit: 50
 
 inference:
+  provider: "azure_ai_inference"
   mode: "auto"
   model: ""
   temperature: 0.0
@@ -39,15 +45,18 @@ judging:
   prompt_template: "v2"           # bare-integer scoring (1-5)
   judges:
     - name: "gpt4o-foundry"
-      provider: "foundry"
+      provider: "azure_ai_inference"
+      mode: "request_response"
       model: "gpt-4o"
       # max_tokens: 512         # Max completion tokens (default: 512)
     - name: "claude-foundry"
-      provider: "foundry"
+      provider: "azure_ai_inference"
+      mode: "request_response"
       model: "claude-3-opus"
     - name: "gpt4o-batch"
-      provider: "batch"
-      model: "gpt-4o"
+      provider: "azure_openai"
+      mode: "batch"
+      model: "gpt-4o-batch"
 
 pricing:
   enabled: true

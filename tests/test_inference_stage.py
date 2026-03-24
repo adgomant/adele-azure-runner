@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from adele_runner.runtime.types import ChatResponse, ResolvedInferenceTarget
+from adele_runner.runtime.types import ChatResponse, ResolvedInferenceTarget, ResolvedProviderTarget
 from adele_runner.schemas import DatasetItem
 from adele_runner.stages.inference import build_inference_output, build_inference_request
 
@@ -10,9 +10,9 @@ from adele_runner.stages.inference import build_inference_output, build_inferenc
 def test_build_inference_request():
     item = DatasetItem(instance_id="i1", prompt="Hello", ground_truth="Hi")
     target = ResolvedInferenceTarget(
-        adapter_kind="foundry",
-        execution_kind="request_response",
-        model="gpt-4o",
+        provider_target=ResolvedProviderTarget(provider_kind="azure_ai_inference", model="gpt-4o"),
+        requested_mode="request_response",
+        prompt_mode="request_response",
         temperature=0.2,
         max_tokens=256,
         top_p=0.9,
@@ -29,9 +29,9 @@ def test_build_inference_request():
 def test_build_inference_output():
     item = DatasetItem(instance_id="i1", prompt="Hello", ground_truth="Hi")
     target = ResolvedInferenceTarget(
-        adapter_kind="google_genai",
-        execution_kind="request_response",
-        model="gemini-2.5-flash",
+        provider_target=ResolvedProviderTarget(provider_kind="google_genai", model="gemini-2.5-flash"),
+        requested_mode="request_response",
+        prompt_mode="request_response",
         temperature=0.0,
         max_tokens=256,
         top_p=1.0,
@@ -52,4 +52,3 @@ def test_build_inference_output():
     assert output.response == "Hello back"
     assert output.tokens_prompt == 10
     assert output.run_id == "run-1"
-

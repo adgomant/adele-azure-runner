@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from adele_runner.runtime.types import ChatResponse, ResolvedJudgeTarget
+from adele_runner.runtime.types import ChatResponse, ResolvedJudgeTarget, ResolvedProviderTarget
 from adele_runner.schemas import InferenceOutput
 from adele_runner.stages.judging import build_judge_output, build_judge_request
 
@@ -16,9 +16,9 @@ def test_build_judge_request_v1():
     )
     target = ResolvedJudgeTarget(
         judge_name="judge-a",
-        adapter_kind="foundry",
-        execution_kind="request_response",
-        model="gpt-4o",
+        provider_target=ResolvedProviderTarget(provider_kind="azure_ai_inference", model="gpt-4o"),
+        requested_mode="request_response",
+        prompt_mode="request_response",
         prompt_template="v1",
         max_tokens=512,
     )
@@ -40,9 +40,9 @@ def test_build_judge_output_v2():
     )
     target = ResolvedJudgeTarget(
         judge_name="judge-a",
-        adapter_kind="foundry",
-        execution_kind="request_response",
-        model="gpt-4o",
+        provider_target=ResolvedProviderTarget(provider_kind="azure_ai_inference", model="gpt-4o"),
+        requested_mode="request_response",
+        prompt_mode="request_response",
         prompt_template="v2",
         max_tokens=512,
     )
@@ -59,4 +59,3 @@ def test_build_judge_output_v2():
     assert output.judge_name == "judge-a"
     assert output.raw_output == "4"
     assert output.judge_prompt == "Rendered prompt"
-

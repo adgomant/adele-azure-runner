@@ -15,8 +15,13 @@ from rich.progress import (
 )
 
 from adele_runner.config import AppConfig
-from adele_runner.runtime.executors import BatchExecutor, RequestResponseExecutor
+from adele_runner.runtime.executors import (
+    BatchExecutor,
+    RequestResponseExecutor,
+    create_rate_limiter,
+)
 from adele_runner.runtime.resolution import (
+    resolve_inference_binding,
     resolve_inference_execution_settings,
     resolve_inference_target,
 )
@@ -31,6 +36,7 @@ logger = logging.getLogger(__name__)
 async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[InferenceOutput]:
     """Run inference over *items* with checkpointing and dedup."""
     target = resolve_inference_target(config)
+    binding = resolve_inference_binding(config, target)
     settings = resolve_inference_execution_settings(config)
     run_dir = config.run_dir()
     ensure_run_dir(run_dir)
@@ -73,17 +79,24 @@ async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[Inf
         append_jsonl(outputs_path, output)
         completed.append(output)
 
-    logger.info("Inference execution: adapter=%s mode=%s", target.adapter_kind, target.execution_kind)
+    logger.info("Inference execution: provider=%s mode=%s", target.provider_kind, binding.execution_kind)
 
-    if target.execution_kind == "batch":
-        await BatchExecutor(config).execute(
-            adapter_kind=target.adapter_kind,
+    if binding.execution_kind == "batch":
+        adapter = binding.create_adapter(config)
+        await BatchExecutor().execute(
+            adapter=adapter,
             requests=requests,
             run_dir=run_dir,
             settings=settings,
             on_result=_record_response,
         )
     else:
+        rate_limiter = create_rate_limiter(settings, target.rate_limits)
+        adapter = binding.create_adapter(
+            config,
+            rate_limiter=rate_limiter,
+            configured_rate_limits=target.rate_limits,
+        )
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -97,11 +110,11 @@ async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[Inf
                 _record_response(response)
                 progress.advance(task_id)
 
-            await RequestResponseExecutor(config).execute(
-                adapter_kind=target.adapter_kind,
+            await RequestResponseExecutor().execute(
+                adapter=adapter,
                 requests=requests,
                 settings=settings,
-                rate_limits=target.rate_limits,
+                rate_limiter=rate_limiter,
                 on_result=_record_and_advance,
             )
 

@@ -1,0 +1,2 @@
+"""Azure AI Inference adapters."""
+

@@ -6,8 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from adele_runner.config import AppConfig
-from adele_runner.runtime.executors import BatchExecutor, RequestResponseExecutor
+from adele_runner.config import RateLimitsConfig
+from adele_runner.runtime.executors import (
+    BatchExecutor,
+    RequestResponseExecutor,
+    create_rate_limiter,
+)
 from adele_runner.runtime.types import ChatMessage, ChatRequest, ChatResponse, ExecutionSettings
 
 
@@ -50,14 +54,31 @@ def _settings() -> ExecutionSettings:
     )
 
 
-@pytest.mark.asyncio
-async def test_request_response_executor_calls_callback(mocker):
-    config = AppConfig.model_validate({})
-    mocker.patch(
-        "adele_runner.runtime.executors.build_request_response_adapter",
-        return_value=_FakeRequestResponseAdapter(),
+def test_create_rate_limiter_returns_none_without_effective_rpm():
+    assert create_rate_limiter(_settings(), None) is None
+
+
+def test_create_rate_limiter_uses_settings_and_limits():
+    settings = ExecutionSettings(
+        max_in_flight=2,
+        request_timeout_s=30.0,
+        max_retries=1,
+        backoff_base_s=0.5,
+        backoff_max_s=5.0,
+        max_poll_time_s=60.0,
+        batch_completion_window="24h",
+        effective_rpm=100,
     )
-    executor = RequestResponseExecutor(config)
+    limiter = create_rate_limiter(
+        settings,
+        RateLimitsConfig(tokens_per_minute=80_000, requests_per_minute=300),
+    )
+    assert limiter is not None
+
+
+@pytest.mark.asyncio
+async def test_request_response_executor_calls_callback():
+    executor = RequestResponseExecutor()
     seen: list[str] = []
     requests = [
         ChatRequest(
@@ -68,7 +89,7 @@ async def test_request_response_executor_calls_callback(mocker):
     ]
 
     results = await executor.execute(
-        adapter_kind="foundry",
+        adapter=_FakeRequestResponseAdapter(),
         requests=requests,
         settings=_settings(),
         on_result=lambda result: seen.append(result.request_id),  # type: ignore[union-attr]
@@ -79,13 +100,8 @@ async def test_request_response_executor_calls_callback(mocker):
 
 
 @pytest.mark.asyncio
-async def test_batch_executor_calls_callback(mocker, tmp_path: Path):
-    config = AppConfig.model_validate({})
-    mocker.patch(
-        "adele_runner.runtime.executors.build_batch_adapter",
-        return_value=_FakeBatchAdapter(),
-    )
-    executor = BatchExecutor(config)
+async def test_batch_executor_calls_callback(tmp_path: Path):
+    executor = BatchExecutor()
     seen: list[str] = []
     requests = [
         ChatRequest(
@@ -96,7 +112,7 @@ async def test_batch_executor_calls_callback(mocker, tmp_path: Path):
     ]
 
     results = await executor.execute(
-        adapter_kind="azure_openai",
+        adapter=_FakeBatchAdapter(),
         requests=requests,
         run_dir=tmp_path,
         settings=_settings(),
@@ -105,4 +121,3 @@ async def test_batch_executor_calls_callback(mocker, tmp_path: Path):
 
     assert [result.content for result in results] == ["batch:r1"]
     assert seen == ["r1"]
-

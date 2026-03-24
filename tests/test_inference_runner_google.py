@@ -17,7 +17,11 @@ async def test_inference_runner_uses_google_request_response_lane(mocker, tmp_pa
     cfg = AppConfig.model_validate(
         {
             "run": {"run_id": "google-run", "output_dir": str(tmp_path)},
-            "inference": {"mode": "google", "model": "gemini-2.5-flash"},
+            "inference": {
+                "provider": "google_genai",
+                "mode": "request_response",
+                "model": "gemini-2.5-flash",
+            },
             "judging": {"enabled": False},
         }
     )
@@ -29,11 +33,18 @@ async def test_inference_runner_uses_google_request_response_lane(mocker, tmp_pa
         completion_tokens=1,
     )
 
+    def _fake_create_adapter(*args, **kwargs):  # noqa: ANN002, ANN003
+        return object()
+
     async def _fake_execute(self, **kwargs):  # noqa: ANN001
-        assert kwargs["adapter_kind"] == "google_genai"
         kwargs["on_result"](response)
         return [response]
 
+    mocker.patch.object(
+        inference_runner,
+        "resolve_inference_binding",
+        return_value=mocker.Mock(execution_kind="request_response", create_adapter=_fake_create_adapter),
+    )
     execute = mocker.patch.object(
         inference_runner.RequestResponseExecutor,
         "execute",
@@ -53,4 +64,3 @@ async def test_inference_runner_uses_google_request_response_lane(mocker, tmp_pa
     assert completed[0].response == "Hi"
     assert execute.call_count == 1
     batch_execute.assert_not_called()
-

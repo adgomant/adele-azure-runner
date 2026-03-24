@@ -1,13 +1,13 @@
 # ADeLe Azure Runner
 
-Run the [ADeLe benchmark](https://huggingface.co/datasets/CFI-Kinds-of-Intelligence/ADeLe_battery_v1dot0) at scale against Azure AI Foundry or Gemini models, then evaluate outputs with multiple LLM judges.
+Run the [ADeLe benchmark](https://huggingface.co/datasets/CFI-Kinds-of-Intelligence/ADeLe_battery_v1dot0) against multiple model SDKs and execution modes, then evaluate outputs with one or more LLM judges.
 
 ## Features
 
-- **Universal inference** -- any Foundry-deployed model (GPT, Claude, Llama, Qwen, DeepSeek, ...) via the `azure-ai-inference` SDK
-- **Gemini inference** -- direct Gemini API support via the `google-genai` SDK
-- **Azure OpenAI Batch API** fast-path for inference and judging when available
-- **Multi-judge evaluation** -- run multiple judges (e.g. GPT-4o + Claude) per instance, mix Foundry async and Batch judges in the same run
+- **Provider / mode split** -- configure the SDK provider independently from the execution mode
+- **Multiple providers** -- `azure_ai_inference`, `azure_openai`, `google_genai`, and `anthropic`
+- **Multiple modes** -- `request_response`, `batch`, and provider-local `auto`
+- **Multi-judge evaluation** -- mix request-response and batch judges in the same run
 - **Two judge prompt templates** -- structured JSON (v1) or bare-integer (v2) scoring
 - **Async bounded concurrency** with exponential backoff, smart retry filtering, and per-request timeouts
 - **Rate-limit auto-tuning** -- provide TPM/RPM and the runner computes optimal concurrency settings
@@ -19,8 +19,7 @@ Run the [ADeLe benchmark](https://huggingface.co/datasets/CFI-Kinds-of-Intellige
 
 - Python 3.11+
 - [`uv`](https://github.com/astral-sh/uv) for dependency management
-- Azure AI Foundry deployment(s)
-- (Optional) Azure OpenAI resource for batch mode
+- Credentials and target endpoints for whichever providers you use
 
 ## Quick Start
 
@@ -32,11 +31,11 @@ cd adele-azure-runner
 # Create virtual environment and install dependencies
 uv venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-uv sync                     # add `--extra batch` for Azure OpenAI Batch API support
+uv sync --extra dev
 
 # Copy and edit config
 cp config.example.yaml config.yaml
-# Edit config.yaml: set your endpoint, model, and judge settings
+# Edit config.yaml: set provider credentials, targets, and judge settings
 
 # Set API keys -- copy .env to .env.local and fill in your real keys
 cp .env .env.local
@@ -47,10 +46,10 @@ cp .env .env.local
 
 ```bash
 # 1. Run inference on the first 50 ADeLe items
-uv run adele-runner run-inference --model gpt-4o
+uv run adele-runner run-inference --provider azure_ai_inference --model gpt-4o
 
 # 2. Judge outputs with two models
-uv run adele-runner run-judge --judge gpt-4o --judge claude-3-opus
+uv run adele-runner run-judge --judge gpt-4o:azure_ai_inference:request_response --judge claude-sonnet-4-5:anthropic:batch
 
 # 3. Merge into Parquet
 uv run adele-runner merge-results
@@ -62,13 +61,13 @@ uv run adele-runner summarize
 Or run the full pipeline in one command:
 
 ```bash
-uv run adele-runner run-all --model gpt-4o --judge gpt-4o --judge claude-3-opus
+uv run adele-runner run-all --provider azure_ai_inference --model gpt-4o --judge gpt-4o:azure_ai_inference:request_response --judge claude-sonnet-4-5:anthropic:batch
 ```
 
 Use `--dry-run` on any command to preview the plan without making API calls:
 
 ```bash
-uv run adele-runner run-inference --model gpt-4o --dry-run
+uv run adele-runner run-inference --provider google_genai --mode request_response --model gemini-2.5-flash --dry-run
 ```
 
 Use `--run-id` before any command to override the run ID (useful for comparing models):
@@ -94,11 +93,11 @@ All outputs are written to `runs/<run_id>/`:
 
 | Guide | Contents |
 |---|---|
-| [Configuration](docs/configuration.md) | Full config reference -- every field, type, default, env vars |
-| [CLI Reference](docs/cli-reference.md) | All commands and flags with examples |
-| [Architecture](docs/architecture.md) | Module map, data flow, adapter pattern, concurrency model |
-| [Judging](docs/judging.md) | Prompt templates, multi-judge setup, JSON parsing pipeline |
-| [Batch Mode](docs/batch-mode.md) | Azure OpenAI Batch API lifecycle and configuration |
+| [Configuration](docs/configuration.md) | `providers.*`, targets, inference, judges, validation, and compatibility |
+| [CLI Reference](docs/cli-reference.md) | Commands, `--provider`, `--mode`, and judge grammar |
+| [Architecture](docs/architecture.md) | Provider registry, transport contracts, stages, and executors |
+| [Judging](docs/judging.md) | Judge config, parsing, and mixed-mode execution |
+| [Batch Mode](docs/batch-mode.md) | Batch support across Azure OpenAI, Google GenAI, and Anthropic |
 | [Resume & Idempotency](docs/resume-and-idempotency.md) | Dedup index, safe resume, re-run semantics |
 | [Output Artifacts](docs/output-artifacts.md) | File schemas and how to consume them |
 | [Development](docs/development.md) | Dev setup, tests, lint, project structure |
@@ -107,14 +106,14 @@ All outputs are written to `runs/<run_id>/`:
 
 ```bash
 # Run tests
-uv run pytest tests/ -v
+./.venv/bin/pytest tests/ -v
 
 # Lint and format
-uv run ruff check src/ tests/
-uv run ruff format src/ tests/
+./.venv/bin/ruff check src/ tests/
+./.venv/bin/ruff format src/ tests/
 
 # Type-check
-uv run mypy src/
+./.venv/bin/mypy src/
 ```
 
 See [docs/development.md](docs/development.md) for the full project structure and test descriptions.

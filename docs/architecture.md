@@ -1,187 +1,214 @@
 # Architecture
 
-## Design Axes
+## Core Model
 
-The runner now separates its internal logic across three independent axes:
+The runner now separates three concerns that used to be mixed together:
 
-- **Adapters** — provider/SDK integrations (`foundry`, `google_genai`, `azure_openai`)
-- **Stages** — benchmark logic (`inference`, `judging`)
-- **Execution modes** — transport style (`request_response`, `batch`)
+- `provider`: the exact SDK family
+- `mode`: how that SDK is queried
+- `stage`: what the runner is doing with the model
 
-This keeps provider SDK code out of the stage logic and keeps stage-specific prompting/parsing out of the transport layer.
+Concrete examples:
 
-## Module Map
+- provider: `azure_ai_inference`, `azure_openai`, `google_genai`, `anthropic`
+- mode: `request_response`, `batch`, `auto` before resolution
+- stage: `inference`, `judging`
 
-```
+This means:
+
+- adapters own SDK calls
+- stages own prompt construction and response interpretation
+- executors own concurrency, retries, polling, and rate limiting
+
+## Package Layout
+
+```text
 src/adele_runner/
-  __init__.py
-  cli.py                    ← Typer CLI entry point
-  config.py                 ← Pydantic config models + YAML loader
-  schemas.py                ← Public output schemas
+  cli.py
+  config.py
+  schemas.py
 
   adapters/
-    foundry.py              ← Azure AI Foundry request-response transport
-    google_genai.py         ← Google Gemini request-response transport
-    azure_openai.py         ← Azure OpenAI batch transport
-    factory.py              ← Adapter construction helpers
-    foundry_inference.py    ← Compatibility shim for older imports
-    azure_openai_batch.py   ← Compatibility shim for older imports
+    providers/
+      azure_ai_inference/
+        request_response.py
+      azure_openai/
+        request_response.py
+        batch.py
+      google_genai/
+        request_response.py
+        batch.py
+      anthropic/
+        request_response.py
+        batch.py
+    foundry.py
+    google_genai.py
+    azure_openai.py
+    factory.py
 
   runtime/
-    types.py                ← Internal transport contracts and resolved targets
-    resolution.py           ← Config → internal targets/execution settings
-    executors.py            ← Shared request-response and batch executors
+    types.py
+    registry.py
+    resolution.py
+    executors.py
 
   stages/
-    inference.py            ← Build inference requests and map responses
-    judging.py              ← Judge prompts, parsing, and output mapping
-
-  datasets/
-    adele.py                ← ADeLe HuggingFace dataset loader
+    inference.py
+    judging.py
 
   pipeline/
-    inference_runner.py     ← Thin orchestration for inference
-    judge_runner.py         ← Thin orchestration for judging
-    merge.py                ← Merge inference + judge → Parquet
-    metrics.py              ← Score stats, Cohen's kappa, token usage
-
-  utils/
-    io.py                   ← JSONL/Parquet I/O, dedup index
-    retry.py                ← Tenacity retry with smart error classification
-    concurrency.py          ← Bounded async concurrency + adaptive rate limiter
-    batch_split.py          ← Split large batch request files to respect Azure limits
+    inference_runner.py
+    judge_runner.py
+    merge.py
+    metrics.py
 ```
 
-## Internal Flow
+The top-level adapter modules are compatibility shims. Real implementations live under `adapters/providers/<provider>/<mode>.py`.
 
-```
-config.yaml / CLI flags
-          │
-          ▼
+## Dataflow
+
+```text
+config.yaml / CLI
+    ↓
+config normalization + validation
+    ↓
 runtime.resolution
-  ├── ResolvedInferenceTarget
-  ├── ResolvedJudgeTarget[]
-  └── ExecutionSettings
-          │
-          ├──────────────────────────────┐
-          ▼                              ▼
-stages.inference                    stages.judging
-  build ChatRequest                   build ChatRequest
-  map ChatResponse → InferenceOutput  parse ChatResponse → JudgeOutput
-          │                              │
-          └──────────────┬───────────────┘
-                         ▼
-                 runtime.executors
-           ├── RequestResponseExecutor
-           └── BatchExecutor
-                         │
-                         ▼
-                      adapters
-           ├── FoundryAdapter
-           ├── GoogleGenAIAdapter
-           └── AzureOpenAIAdapter
+    ↓
+ResolvedProviderTarget + ResolvedModeBinding + ExecutionSettings
+    ↓
+stage builds ChatRequest
+    ↓
+executor runs concrete adapter
+    ↓
+adapter returns ChatResponse
+    ↓
+stage maps to public output schema
+    ↓
+pipeline runner persists artifacts
 ```
 
-The pipeline runners coordinate dedup, artifact writing, and run-level flow, but they no longer embed judge prompt templates, judge parsers, or provider-specific transport code.
+The normalized transport flow is:
+
+- `DatasetItem` or `InferenceOutput`
+- `ChatRequest`
+- provider SDK call
+- `ChatResponse`
+- `InferenceOutput` or `JudgeOutput`
 
 ## Transport Contracts
 
-The adapter layer uses normalized internal contracts:
+Internal transport contracts live in [types.py](/Users/alvar/proyects/adele-azure-runner/src/adele_runner/runtime/types.py).
 
-- `ChatRequest` — request id, model, messages, generation params, metadata
-- `ChatResponse` — request id, content, token usage, finish reason, raw metadata
-- `AdapterCapabilities` — whether the adapter supports `request_response` and/or `batch`
-- `ResolvedInferenceTarget` / `ResolvedJudgeTarget` — explicit internal targets derived from the public config
-- `ExecutionSettings` — per-stage resolved concurrency, timeout, retry, and batch polling settings
+- `ChatMessage`: normalized `{role, content}`
+- `ChatRequest`: request id, model, messages, generation params, metadata
+- `ChatResponse`: normalized content, token usage, finish reason, raw output, metadata
+- `AdapterCapabilities`: static support flags
+- `ResolvedProviderTarget`: provider + model + target metadata + rate limits
+- `ResolvedModeBinding`: resolved mode plus adapter factory
+- `ExecutionSettings`: per-stage execution settings
 
-These are internal-only. Public output schemas remain `InferenceOutput` and `JudgeOutput`.
+Adapters only speak `ChatRequest` and `ChatResponse`. They do not know about `InferenceOutput` or `JudgeOutput`.
 
-## Adapter Pattern
+## Provider Registry
 
-All provider-specific SDK code lives in `adapters/`.
+[registry.py](/Users/alvar/proyects/adele-azure-runner/src/adele_runner/runtime/registry.py) is the decoupling point between provider and mode.
 
-| Adapter | Module | Capabilities | SDK |
-|---|---|---|---|
-| `FoundryAdapter` | `adapters/foundry.py` | `request_response` | `azure-ai-inference` |
-| `GoogleGenAIAdapter` | `adapters/google_genai.py` | `request_response` | `google-genai` |
-| `AzureOpenAIAdapter` | `adapters/azure_openai.py` | `batch` | `openai` |
+Each provider is described by a `ProviderDescriptor` with:
 
-The same Foundry adapter is used for both inference and judging. The difference between those stages is in how requests are built and how responses are interpreted, not in which adapter is used.
+- request-response adapter factory
+- batch adapter factory
+- capability resolver
 
-## Stage Logic
+The capability resolver is where static and dynamic support checks happen.
+
+Examples:
+
+- `azure_ai_inference` supports request-response only
+- `azure_openai` supports both modes, but batch requires target metadata showing the deployment is batch-capable
+- `google_genai` supports both modes and can run against `gemini_api` or `vertex_ai`
+- `anthropic` supports both modes
+
+Executors never branch on provider. They receive a concrete adapter instance that was already selected by the registry and resolution layers.
+
+## Resolution
+
+[resolution.py](/Users/alvar/proyects/adele-azure-runner/src/adele_runner/runtime/resolution.py) turns public config into executable internal targets.
+
+For inference it resolves:
+
+- provider
+- requested mode
+- effective mode after `auto`
+- model/deployment target metadata
+- rate limits
+- execution settings
+
+For judging it does the same per judge, plus:
+
+- judge name
+- judge prompt template
+- judge `max_tokens`
+
+The runtime no longer mutates shared concurrency config between stages. Each stage gets its own resolved `ExecutionSettings`.
+
+## Stages
 
 ### Inference
 
-`stages/inference.py` is responsible for:
+[stages/inference.py](/Users/alvar/proyects/adele-azure-runner/src/adele_runner/stages/inference.py):
 
-- turning each `DatasetItem` into a `ChatRequest`
-- mapping each `ChatResponse` into an `InferenceOutput`
+- converts a dataset item into `ChatRequest`
+- maps `ChatResponse` into `InferenceOutput`
 
 ### Judging
 
-`stages/judging.py` is responsible for:
+[stages/judging.py](/Users/alvar/proyects/adele-azure-runner/src/adele_runner/stages/judging.py):
 
-- rendering judge prompts (`v1` JSON, `v2` bare integer)
-- parsing judge responses with fallback logic
-- mapping each `ChatResponse` into a `JudgeOutput`
+- renders judge prompts
+- parses `v1` and `v2` responses
+- maps `ChatResponse` into `JudgeOutput`
 
-This keeps prompt templates and parsing out of `pipeline/judge_runner.py`.
+Stage logic contains no SDK calls.
 
-## Execution Model
+## Executors
 
-### Request-response
+[executors.py](/Users/alvar/proyects/adele-azure-runner/src/adele_runner/runtime/executors.py) contains the shared runtime engines.
 
 `RequestResponseExecutor` handles:
 
-- bounded async concurrency via `bounded_gather()`
-- retries via `utils.retry.make_retry_decorator()`
-- adaptive rate limiting via `AsyncRateLimiter`
-- per-response callbacks for checkpointing
-
-This is the internal name for the non-batch path. The executor is async even when the underlying SDK exposes blocking calls.
-
-### Batch
+- bounded async concurrency
+- retries
+- adaptive rate limiting
+- result callbacks for checkpointing
 
 `BatchExecutor` handles:
 
-- adapter selection for batch-capable providers
-- running the batch workflow in a worker thread
-- per-response callbacks after batch completion
+- running a concrete batch adapter
+- moving blocking batch work to a worker thread
+- emitting results back to the pipeline
 
-Provider-specific upload/poll/download details stay inside the batch adapter.
+Neither executor chooses the provider.
 
-## Config Resolution
+## Pipeline Runners
 
-The public config surface remains unchanged, but runtime execution no longer mutates `config.concurrency` between stages. Instead, `runtime.resolution` builds explicit internal targets and per-stage `ExecutionSettings`.
+- [inference_runner.py](/Users/alvar/proyects/adele-azure-runner/src/adele_runner/pipeline/inference_runner.py)
+- [judge_runner.py](/Users/alvar/proyects/adele-azure-runner/src/adele_runner/pipeline/judge_runner.py)
 
-Current mappings:
+These files are now orchestration-only. They manage:
 
-| Public field | Internal target |
-|---|---|
-| `inference.mode=auto` | `adapter=foundry`, `execution=request_response` |
-| `inference.mode=foundry` | `adapter=foundry`, `execution=request_response` |
-| `inference.mode=google` | `adapter=google_genai`, `execution=request_response` |
-| `inference.mode=batch` | `adapter=azure_openai`, `execution=batch` |
-| `judging.judges[].provider=foundry` | `adapter=foundry`, `execution=request_response` |
-| `judging.judges[].provider=batch` | `adapter=azure_openai`, `execution=batch` |
+- dedup and resume
+- run directory setup
+- artifact persistence
+- dispatching resolved lanes
 
-Inference and judging each get their own resolved `ExecutionSettings`, so rate-limit tuning is phase-local and does not overwrite shared config state.
+They no longer embed provider-specific SDK logic or judge parsing logic.
 
-## Retry Strategy
+## Compatibility
 
-The retry module (`utils/retry.py`) wraps [tenacity](https://tenacity.readthedocs.io/) with smart error classification:
+The new public model is `provider + mode`, but the code still accepts older config/CLI forms for one release cycle:
 
-**Retryable** (transient):
+- `foundry`
+- `google`
+- `batch` as a pseudo-provider
 
-- connection errors, timeouts
-- HTTP 429 (rate limit)
-- HTTP 500, 502, 503, 504 (server errors)
-
-**Not retryable** (permanent):
-
-- Python logic errors (`ValueError`, `TypeError`, `KeyError`, `AttributeError`)
-- HTTP 400, 401, 403, 404, 405, 422
-
-**Unknown** exceptions are retried (fail-open).
-
-Backoff is exponential, starting at `backoff_base_s` and capped at `backoff_max_s`. When a 429 response includes `Retry-After` or `x-ratelimit-reset-tokens` headers, the retry system uses the server-specified wait time instead of generic exponential backoff.
+Those are normalized immediately into the new model and should be considered deprecated.

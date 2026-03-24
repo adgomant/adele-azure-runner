@@ -1,147 +1,95 @@
 # Judging
 
-The judge stage evaluates model outputs by sending them (along with the original prompt and ground truth) to one or more LLM judges. Each judge scores instances on a 1--5 scale.
+The judging stage evaluates inference outputs with one or more judge models. Each judge is configured independently with:
 
-## Judge Providers
+- `provider`
+- `mode`
+- `model`
 
-| Provider | Transport | Config |
-|---|---|---|
-| `foundry` | Azure AI Foundry async (same as inference) | Uses `azure.foundry.endpoint` and `AZURE_AI_API_KEY` |
-| `batch` | Azure OpenAI Batch API | Uses `azure.batch.endpoint` and `AZURE_OPENAI_API_KEY` |
-
-Configure judges in `config.yaml`:
+## Example Config
 
 ```yaml
 judging:
   enabled: true
-  prompt_template: "v1"
+  prompt_template: v1
   judges:
-    - name: "gpt4o-judge"
-      provider: "foundry"
-      model: "gpt-4o"
-      # max_tokens: 512         # Max completion tokens (default: 512)
-      # rate_limits:            # Optional per-judge rate limits (foundry only)
-      #   tokens_per_minute: 80000
-      #   requests_per_minute: 300
-    - name: "claude-judge"
-      provider: "foundry"
-      model: "claude-3-opus"
-    - name: "gpt4o-batch-judge"
-      provider: "batch"
-      model: "gpt-4o"
+    - name: gpt4o-judge
+      provider: azure_ai_inference
+      mode: request_response
+      model: gpt-4o
+      rate_limits:
+        tokens_per_minute: 80000
+        requests_per_minute: 300
+    - name: gemini-batch-judge
+      provider: google_genai
+      mode: batch
+      model: gemini-2.5-flash
+    - name: claude-batch-judge
+      provider: anthropic
+      mode: batch
+      model: claude-sonnet-4-5
 ```
 
-Or override from the CLI:
+Equivalent CLI:
 
 ```bash
-uv run adele-runner run-judge --judge gpt-4o --judge claude-3-opus:foundry --judge gpt-4o:batch
-
-# With per-judge rate limits and max_tokens
-uv run adele-runner run-judge --judge gpt-4o:foundry:80000:300:1024 --judge claude-3-opus
+uv run adele-runner run-judge \
+  --judge gpt-4o:azure_ai_inference:request_response:80000:300:512 \
+  --judge gemini-2.5-flash:google_genai:batch \
+  --judge claude-sonnet-4-5:anthropic:batch
 ```
 
 ## Prompt Templates
 
-### v1 -- Structured JSON
+### `v1`
 
-The judge is asked to return a JSON object:
+Asks the judge for structured output with:
 
-```json
-{"score": 4, "verdict": "correct", "reason": "The answer matches the expected output."}
-```
+- `score`
+- `verdict`
+- `reason`
 
-- `score`: integer 1--5
-- `verdict`: one of `correct`, `incorrect`, `partial`, `unknown`
-- `reason`: free-text explanation
+### `v2`
 
-This is the default template (`prompt_template: "v1"`).
+Asks the judge for a single integer from `1` to `5`.
 
-### v2 -- Bare Integer
+## Parsing
 
-The judge is asked to return only an integer (1--5). This is simpler and works well with models that struggle with structured output.
+Parsing lives in [stages/judging.py](/Users/alvar/proyects/adele-azure-runner/src/adele_runner/stages/judging.py).
 
-Set with `prompt_template: "v2"` in config or `--judge-template v2` on the CLI.
+`v1` parsing tries:
 
-## Parsing Pipeline
+1. direct JSON
+2. extracting a JSON block from surrounding text
+3. regex fallback
+4. default fallback
 
-Judge output parsing is designed to handle malformed responses:
+`v2` parsing tries:
 
-### v1 Parsing
+1. direct integer parsing
+2. the first `1-5` found in text
+3. default fallback
 
-```
-raw output
-    │
-    ├── 1. Try json.loads(raw) directly
-    │       → Success: validate fields, return
-    │
-    ├── 2. Extract JSON block from markdown fences / surrounding text
-    │       → Regex: find {...} pattern
-    │       → Try json.loads on extracted block
-    │
-    ├── 3. Regex fallback
-    │       → Extract score, verdict, reason via patterns
-    │
-    └── 4. Default fallback
-            → score=1, verdict="unknown", reason="Failed to parse judge output"
-```
+## Execution Model
 
-### v2 Parsing
+For each judge:
 
-```
-raw output
-    │
-    ├── 1. Try int(raw.strip())
-    │       → Clamp to 1--5
-    │
-    ├── 2. Regex: find first digit 1-5 in text
-    │       → re.search(r'\b([1-5])\b', raw)
-    │
-    └── 3. Default fallback
-            → score=1, verdict="unknown"
-```
+1. stage logic builds a judge `ChatRequest`
+2. resolution picks provider, effective mode, and execution settings
+3. a concrete adapter is created from the provider registry
+4. the matching executor runs it
+5. the stage maps the `ChatResponse` into `JudgeOutput`
 
-## Concurrent Execution
+The judge pipeline runs request-response and batch lanes concurrently when both are present.
 
-When a run includes both Foundry and Batch judges, they execute concurrently:
+## Rate Limits
 
-```
-run_judge()
-    │
-    ├── asyncio.gather(
-    │       _run_request_response_judges(...),
-    │       _run_batch_judges(...)
-    │   )
-    │
-    └── All judge outputs appended to judge_outputs.jsonl
-```
-
-Internally, request building and parsing live in `stages/judging.py`, while `pipeline/judge_runner.py` only handles orchestration. Foundry judges share the same provider adapter used by inference; the only stage-specific differences are the rendered prompt and the response parser.
-
-Foundry judges use the shared `RequestResponseExecutor` with bounded async concurrency and retry handling. Batch judges use the shared `BatchExecutor`, which delegates the Azure OpenAI batch lifecycle to the batch adapter.
+Judge `rate_limits` only affect request-response lanes. Batch judges do not use per-request pacing.
 
 ## Dedup
 
-Judge results are deduplicated by the tuple `(instance_id, model_id, judge_name)`. On re-run, only missing combinations are processed. This allows:
+Judge rows are deduplicated on:
 
-- Adding a new judge to an existing run
-- Resuming after interruption
-- Re-running without duplicating work
+`(instance_id, model_id, judge_name)`
 
-## Score Schema
-
-Every judge output follows this schema:
-
-| Field | Type | Description |
-|---|---|---|
-| `instance_id` | `str` | Dataset instance identifier |
-| `model_id` | `str` | Model that produced the inference output |
-| `judge_name` | `str` | Display name of this judge |
-| `score` | `int` (1--5) | Quality score |
-| `verdict` | `str` | `"correct"`, `"incorrect"`, `"partial"`, or `"unknown"` |
-| `reason` | `str` | Free-text explanation from the judge |
-| `raw_output` | `str` | Unprocessed judge response (for auditability) |
-| `judge_prompt` | `str` | The full prompt sent to the judge |
-| `tokens_prompt` | `int \| null` | Prompt token count (if reported by API) |
-| `tokens_completion` | `int \| null` | Completion token count |
-| `timestamp` | `datetime` | When the evaluation was recorded |
-| `run_id` | `str` | Run identifier |
+This makes judge runs resumable and safe to rerun.

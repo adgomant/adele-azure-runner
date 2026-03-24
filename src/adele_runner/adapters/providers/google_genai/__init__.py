@@ -1,0 +1,2 @@
+"""Google GenAI adapters."""
+
