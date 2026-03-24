@@ -12,6 +12,7 @@ from adele_runner.config import AppConfig
     [
         ("foundry", "foundry"),
         ("batch", "batch"),
+        ("google", "google"),
         ("auto", "foundry"),
     ],
 )

@@ -69,25 +69,31 @@ Connection settings for Azure services. Set once per environment.
 | `split` | `str` | `"train"` | Dataset split to load |
 | `limit` | `int \| null` | `null` | Load only the first N items. `null` loads all |
 
+### `google`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `api_key_env` | `str` | `"GEMINI_API_KEY"` | Environment variable to read for Gemini API access |
+
 ### `inference`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `mode` | `"auto" \| "foundry" \| "batch"` | `"auto"` | Inference mode. See [Mode resolution](#mode-resolution) below |
+| `mode` | `"auto" \| "foundry" \| "batch" \| "google"` | `"auto"` | Inference mode. See [Mode resolution](#mode-resolution) below |
 | `model` | `str` | `""` | Model name or deployment ID. Overridden by `--model` |
 | `temperature` | `float` | `0.0` | Sampling temperature |
 | `max_tokens` | `int` | `2048` | Maximum completion tokens |
 | `top_p` | `float` | `1.0` | Top-p (nucleus) sampling |
-| `rate_limits` | `object \| null` | `null` | Optional rate limits for auto-tuning concurrency in foundry mode (see [Auto-tuning concurrency](#auto-tuning-concurrency)) |
+| `rate_limits` | `object \| null` | `null` | Optional rate limits for auto-tuning concurrency in async modes (`foundry` and `google`) |
 
 ##### `inference.rate_limits`
 
-When set and inference mode is `foundry`, concurrency parameters (`max_in_flight`, `request_timeout_s`, `backoff_base_s`, `backoff_max_s`) are automatically computed from the deployment's rate limits.
+When set and inference mode is `foundry` or `google`, concurrency parameters (`max_in_flight`, `request_timeout_s`, `backoff_base_s`, `backoff_max_s`) are automatically computed from the configured rate limits.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `tokens_per_minute` | `int` | *(required)* | TPM limit from the Azure portal for this deployment |
-| `requests_per_minute` | `int` | *(required)* | RPM limit from the Azure portal for this deployment |
+| `tokens_per_minute` | `int` | *(required)* | TPM limit for this model/provider |
+| `requests_per_minute` | `int` | *(required)* | RPM limit for this model/provider |
 
 ### `concurrency`
 
@@ -159,6 +165,7 @@ pricing:
 |---|---|---|
 | `AZURE_AI_API_KEY` | `azure.foundry.api_key_env` | Foundry inference and Foundry judges |
 | `AZURE_OPENAI_API_KEY` | `azure.batch.api_key_env` | Batch inference and Batch judges |
+| `GEMINI_API_KEY` | `google.api_key_env` | Gemini inference |
 
 The variable names are configurable. The runner reads the env var whose name is specified in the config, not a hardcoded name.
 
@@ -173,8 +180,9 @@ The `inference.mode` field determines how inference requests are dispatched:
 | `"auto"` | `foundry` |
 | `"foundry"` | `foundry` |
 | `"batch"` | `batch` |
+| `"google"` | `google` |
 
-CLI shorthand: `--mode foundry` and `--mode batch` set the mode directly.
+CLI shorthand: `--mode foundry`, `--mode batch`, and `--mode google` set the mode directly.
 
 ## Config Validation
 
@@ -190,13 +198,13 @@ Use `--dry-run` to test config without hitting APIs. Dry-run skips API key valid
 
 ## Auto-tuning Concurrency
 
-When `inference.rate_limits` is configured and the inference mode is `foundry`, the runner automatically computes optimal concurrency parameters from TPM, RPM, and `inference.max_tokens`. This replaces the need to manually tune `concurrency.*` fields and helps avoid 429 (rate limit) errors.
+When `inference.rate_limits` is configured and the inference mode is `foundry` or `google`, the runner automatically computes optimal concurrency parameters from TPM, RPM, and `inference.max_tokens`. This replaces the need to manually tune `concurrency.*` fields and helps avoid 429 (rate limit) errors.
 
-Rate-limit auto-tuning only applies to the **foundry provider**. Batch mode uses a different strategy: requests are automatically split into chunks that respect configurable limits (`azure.batch.max_requests_per_file` and `azure.batch.max_bytes_per_file`). These default to 50K requests / 100 MB per file, well within Azure's hard limits of 100K requests / 200 MB.
+Rate-limit auto-tuning applies to the async providers (`foundry` and `google`). Batch mode uses a different strategy: requests are automatically split into chunks that respect configurable limits (`azure.batch.max_requests_per_file` and `azure.batch.max_bytes_per_file`). These default to 50K requests / 100 MB per file, well within Azure's hard limits of 100K requests / 200 MB.
 
 ### Inference auto-tuning
 
-When `inference.rate_limits` is set and `inference.mode` resolves to `foundry`:
+When `inference.rate_limits` is set and `inference.mode` resolves to `foundry` or `google`:
 
 1. **Effective RPM** = min(RPM, TPM / max_tokens) — the tighter constraint
 2. **max_in_flight** = effective_rpm x estimated_duration / 60, with 80% safety margin
@@ -255,9 +263,9 @@ uv run adele-runner --run-id my_run run-inference --model gpt-4o
 |---|---|---|---|
 | `--config` / `-c` | `Path` | All | Path to YAML config file |
 | `--model` / `-m` | `str` | `run-inference`, `run-all` | Model name or deployment |
-| `--mode` | `str` | `run-inference`, `run-all` | Inference mode: `foundry`, `batch`, or `auto` |
-| `--tpm` | `int` | `run-inference`, `run-all` | Tokens per minute rate limit (foundry only, requires `--rpm`) |
-| `--rpm` | `int` | `run-inference`, `run-all` | Requests per minute rate limit (foundry only, requires `--tpm`) |
+| `--mode` | `str` | `run-inference`, `run-all` | Inference mode: `foundry`, `batch`, `google`, or `auto` |
+| `--tpm` | `int` | `run-inference`, `run-all` | Tokens per minute rate limit (requires `--rpm`) |
+| `--rpm` | `int` | `run-inference`, `run-all` | Requests per minute rate limit (requires `--tpm`) |
 | `--judge` / `-j` | `str` | `run-judge`, `run-all` | Judge model (repeatable). See format below |
 | `--judge-template` | `str` | `run-judge`, `run-all` | Judge prompt template: `v1` or `v2` |
 | `--dry-run` | `bool` | `run-inference`, `run-judge`, `run-all` | Print plan and exit without API calls |

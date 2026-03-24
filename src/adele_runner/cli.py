@@ -16,7 +16,7 @@ from adele_runner.config import AppConfig, JudgeConfig, RateLimitsConfig, load_c
 from adele_runner.schemas import InferenceOutput
 
 # Valid inference mode values for CLI --mode flag.
-_VALID_MODES = {"foundry", "batch", "auto"}
+_VALID_MODES = {"foundry", "batch", "google", "auto"}
 
 app = typer.Typer(
     name="adele-runner",
@@ -293,10 +293,10 @@ def run_inference(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to YAML config."),
     model: str | None = typer.Option(None, "--model", "-m", help="Model name or deployment."),
     mode: str | None = typer.Option(
-        None, "--mode", help="Inference mode: foundry, batch, or auto."
+        None, "--mode", help="Inference mode: foundry, batch, google, or auto."
     ),
-    tpm: int | None = typer.Option(None, "--tpm", help="Tokens per minute rate limit (foundry)."),
-    rpm: int | None = typer.Option(None, "--rpm", help="Requests per minute rate limit (foundry)."),
+    tpm: int | None = typer.Option(None, "--tpm", help="Tokens per minute rate limit."),
+    rpm: int | None = typer.Option(None, "--rpm", help="Requests per minute rate limit."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print plan and exit without API calls."),
 ) -> None:
     """Run inference over the ADeLe dataset."""
@@ -306,7 +306,7 @@ def run_inference(
     cfg = _get_config(config)
     _setup_logging(cfg.logging.level)
     apply_cli_overrides(cfg, run_id=_cli_run_id, mode=mode, model=model, tpm=tpm, rpm=rpm)
-    if cfg.resolve_inference_mode() == "foundry":
+    if cfg.resolve_inference_mode() in {"foundry", "google"}:
         cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, cfg.inference.max_tokens)
 
     items = load_adele(
@@ -404,10 +404,10 @@ def run_all(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to YAML config."),
     model: str | None = typer.Option(None, "--model", "-m", help="Model name or deployment."),
     mode: str | None = typer.Option(
-        None, "--mode", help="Inference mode: foundry, batch, or auto."
+        None, "--mode", help="Inference mode: foundry, batch, google, or auto."
     ),
-    tpm: int | None = typer.Option(None, "--tpm", help="Tokens per minute rate limit (foundry)."),
-    rpm: int | None = typer.Option(None, "--rpm", help="Requests per minute rate limit (foundry)."),
+    tpm: int | None = typer.Option(None, "--tpm", help="Tokens per minute rate limit."),
+    rpm: int | None = typer.Option(None, "--rpm", help="Requests per minute rate limit."),
     judge: list[str] | None = typer.Option(
         None,
         "--judge",
@@ -440,8 +440,8 @@ def run_all(
         rpm=rpm,
     )
 
-    # Apply inference rate-limit overrides (foundry only)
-    if cfg.resolve_inference_mode() == "foundry":
+    # Apply inference rate-limit overrides for async providers
+    if cfg.resolve_inference_mode() in {"foundry", "google"}:
         cfg.apply_rate_limit_overrides(cfg.inference.rate_limits, cfg.inference.max_tokens)
 
     items = load_adele(

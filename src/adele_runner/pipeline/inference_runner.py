@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
 from rich.progress import (
     BarColumn,
@@ -17,6 +18,7 @@ from rich.progress import (
 )
 
 from adele_runner.adapters.foundry_inference import FoundryAdapter
+from adele_runner.adapters.google_genai import GoogleGenAIAdapter
 from adele_runner.config import AppConfig
 from adele_runner.schemas import DatasetItem, InferenceOutput, RunManifest
 from adele_runner.utils.concurrency import AsyncRateLimiter, bounded_gather
@@ -26,8 +28,12 @@ from adele_runner.utils.retry import make_retry_decorator
 logger = logging.getLogger(__name__)
 
 
+class InferenceAdapter(Protocol):
+    async def infer(self, item: DatasetItem) -> InferenceOutput: ...
+
+
 async def _infer_with_retry(
-    adapter: FoundryAdapter,
+    adapter: InferenceAdapter,
     item: DatasetItem,
     retry_decorator,  # noqa: ANN001
 ) -> InferenceOutput:
@@ -38,12 +44,12 @@ async def _infer_with_retry(
     return await _call()
 
 
-async def _run_foundry_async(
+async def _run_async_inference(
     config: AppConfig,
     pending: list[DatasetItem],
     outputs_path: Path,
 ) -> list[InferenceOutput]:
-    """Run inference via Azure AI Foundry with async concurrency."""
+    """Run inference via an async adapter with bounded concurrency."""
     concurrency_cfg = config.concurrency
 
     # Construct rate limiter if effective_rpm was computed from rate limits
@@ -56,7 +62,11 @@ async def _run_foundry_async(
         )
         logger.info("Rate limiter enabled: %d RPM", concurrency_cfg.effective_rpm)
 
-    adapter = FoundryAdapter(config, rate_limiter=rate_limiter)
+    mode = config.resolve_inference_mode()
+    if mode == "google":
+        adapter: InferenceAdapter = GoogleGenAIAdapter(config, rate_limiter=rate_limiter)
+    else:
+        adapter = FoundryAdapter(config, rate_limiter=rate_limiter)
 
     retry_dec = make_retry_decorator(
         max_retries=concurrency_cfg.max_retries,
@@ -171,7 +181,7 @@ async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[Inf
             outputs_path,
         )
     else:
-        completed = await _run_foundry_async(config, pending, outputs_path)
+        completed = await _run_async_inference(config, pending, outputs_path)
 
     logger.info("Inference complete. %d outputs written to %s", len(completed), outputs_path)
 

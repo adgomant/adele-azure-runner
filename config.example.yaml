@@ -10,6 +10,8 @@ azure:
     completion_endpoint: "/chat/completions"
     max_requests_per_file: 99000     # Max requests per batch file (Azure limit: 100000)
     max_bytes_per_file: 190000000    # Max bytes per batch file (Azure limit: 200000000)
+google:
+  api_key_env: "GEMINI_API_KEY"
 
 # ── Run settings ──────────────────────────────────────────────
 run:
@@ -24,12 +26,12 @@ dataset:
 
 # ── Inference ─────────────────────────────────────────────────
 inference:
-  mode: "auto"         # "auto" | "foundry" | "batch"
+  mode: "auto"         # "auto" | "foundry" | "batch" | "google"
   model: ""            # model name or deployment (--model overrides)
   temperature: 0.0
   max_tokens: 50000
   top_p: 1.0
-  # rate_limits:                    # Optional: auto-tunes concurrency params (foundry only)
+  # rate_limits:                    # Optional: auto-tunes concurrency params for async providers
   #   tokens_per_minute: 80000
   #   requests_per_minute: 300
 

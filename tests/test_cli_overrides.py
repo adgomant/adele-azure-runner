@@ -70,6 +70,12 @@ def test_mode_auto_sets_internal_mode():
     assert cfg.inference.mode == "auto"
 
 
+def test_mode_google_sets_internal_mode():
+    cfg = _base_config()
+    apply_cli_overrides(cfg, mode="google")
+    assert cfg.inference.mode == "google"
+
+
 def test_invalid_mode_raises():
     cfg = _base_config()
     with pytest.raises(typer.BadParameter):
@@ -91,6 +97,12 @@ def test_model_with_batch_mode():
     cfg = _base_config()
     apply_cli_overrides(cfg, mode="batch", model="my-batch-deployment")
     assert cfg.inference.model == "my-batch-deployment"
+
+
+def test_model_with_google_mode():
+    cfg = _base_config()
+    apply_cli_overrides(cfg, mode="google", model="gemini-2.5-flash")
+    assert cfg.inference.model == "gemini-2.5-flash"
 
 
 def test_model_without_mode_uses_resolved_default():

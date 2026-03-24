@@ -1,10 +1,11 @@
 # ADeLe Azure Runner
 
-Run the [ADeLe benchmark](https://huggingface.co/datasets/CFI-Kinds-of-Intelligence/ADeLe_battery_v1dot0) at scale against Azure AI Foundry models, then evaluate outputs with multiple LLM judges.
+Run the [ADeLe benchmark](https://huggingface.co/datasets/CFI-Kinds-of-Intelligence/ADeLe_battery_v1dot0) at scale against Azure AI Foundry or Gemini models, then evaluate outputs with multiple LLM judges.
 
 ## Features
 
 - **Universal inference** -- any Foundry-deployed model (GPT, Claude, Llama, Qwen, DeepSeek, ...) via the `azure-ai-inference` SDK
+- **Gemini inference** -- direct Gemini API support via the `google-genai` SDK
 - **Azure OpenAI Batch API** fast-path for inference and judging when available
 - **Multi-judge evaluation** -- run multiple judges (e.g. GPT-4o + Claude) per instance, mix Foundry async and Batch judges in the same run
 - **Two judge prompt templates** -- structured JSON (v1) or bare-integer (v2) scoring

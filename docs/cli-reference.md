@@ -53,9 +53,9 @@ uv run adele-runner run-inference [OPTIONS]
 |---|---|---|---|
 | `--config` | `-c` | `PATH` | Path to YAML config |
 | `--model` | `-m` | `TEXT` | Model name or deployment |
-| `--mode` | | `TEXT` | Inference mode: `foundry`, `batch`, or `auto` |
-| `--tpm` | | `INT` | Tokens per minute rate limit (foundry only, requires `--rpm`) |
-| `--rpm` | | `INT` | Requests per minute rate limit (foundry only, requires `--tpm`) |
+| `--mode` | | `TEXT` | Inference mode: `foundry`, `batch`, `google`, or `auto` |
+| `--tpm` | | `INT` | Tokens per minute rate limit (requires `--rpm`) |
+| `--rpm` | | `INT` | Requests per minute rate limit (requires `--tpm`) |
 | `--dry-run` | | `bool` | Preview plan without API calls |
 
 **Examples:**
@@ -66,6 +66,9 @@ uv run adele-runner run-inference --model gpt-4o
 
 # Batch mode
 uv run adele-runner run-inference --model gpt-4o --mode batch
+
+# Gemini mode
+uv run adele-runner run-inference --model gemini-2.5-flash --mode google
 
 # With rate limits for auto-tuned concurrency
 uv run adele-runner run-inference --model gpt-4o --tpm 80000 --rpm 300
@@ -193,8 +196,8 @@ uv run adele-runner run-all [OPTIONS]
 | `--config` | `-c` | `PATH` | Path to YAML config |
 | `--model` | `-m` | `TEXT` | Model name or deployment |
 | `--mode` | | `TEXT` | Inference mode: `foundry`, `batch`, or `auto` |
-| `--tpm` | | `INT` | Tokens per minute rate limit (foundry only, requires `--rpm`) |
-| `--rpm` | | `INT` | Requests per minute rate limit (foundry only, requires `--tpm`) |
+| `--tpm` | | `INT` | Tokens per minute rate limit (requires `--rpm`) |
+| `--rpm` | | `INT` | Requests per minute rate limit (requires `--tpm`) |
 | `--judge` | `-j` | `TEXT` | Judge model. Repeatable. See [Judge flag format](#judge-flag-format) |
 | `--judge-template` | | `TEXT` | Judge prompt template: `v1` or `v2` |
 | `--dry-run` | | `bool` | Preview plan without API calls |

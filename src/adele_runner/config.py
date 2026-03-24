@@ -44,6 +44,10 @@ class AzureConfig(BaseModel):
     batch: AzureBatchConnection = Field(default_factory=AzureBatchConnection)
 
 
+class GoogleGenAIConnection(BaseModel):
+    api_key_env: str = "GEMINI_API_KEY"
+
+
 class RunConfig(BaseModel):
     run_id: str = "adele_run"
     output_dir: str = "runs"
@@ -57,7 +61,7 @@ class DatasetConfig(BaseModel):
 
 
 class InferenceConfig(BaseModel):
-    mode: Literal["auto", "foundry", "batch"] = "auto"
+    mode: Literal["auto", "foundry", "batch", "google"] = "auto"
     model: str = ""
     temperature: float = 0.0
     max_tokens: int = 2048
@@ -164,6 +168,7 @@ class AppConfig(BaseModel):
     """Root config object."""
 
     azure: AzureConfig = Field(default_factory=AzureConfig)
+    google: GoogleGenAIConnection = Field(default_factory=GoogleGenAIConnection)
     run: RunConfig = Field(default_factory=RunConfig)
     dataset: DatasetConfig = Field(default_factory=DatasetConfig)
     inference: InferenceConfig = Field(default_factory=InferenceConfig)
@@ -189,10 +194,18 @@ class AppConfig(BaseModel):
             raise ValueError(f"Environment variable '{self.azure.batch.api_key_env}' is not set.")
         return key
 
-    def resolve_inference_mode(self) -> Literal["foundry", "batch"]:
+    def get_google_api_key(self) -> str:
+        key = os.environ.get(self.google.api_key_env, "")
+        if not key:
+            raise ValueError(f"Environment variable '{self.google.api_key_env}' is not set.")
+        return key
+
+    def resolve_inference_mode(self) -> Literal["foundry", "batch", "google"]:
         """Resolve the effective inference mode from config."""
         if self.inference.mode == "batch":
             return "batch"
+        if self.inference.mode == "google":
+            return "google"
         return "foundry"
 
     def apply_rate_limit_overrides(
@@ -260,13 +273,16 @@ class AppConfig(BaseModel):
                 )
             if not self.inference.model:
                 errors.append("Model is not set. Use --model or set inference.model.")
-        else:
+        elif mode == "batch":
             ep = self.azure.batch.endpoint
             if not ep or _PLACEHOLDER_RE.search(ep):
                 errors.append(
                     f"Batch endpoint is not configured: '{ep}'. "
                     "Set azure.batch.endpoint in config.yaml."
                 )
+            if not self.inference.model:
+                errors.append("Model is not set. Use --model or set inference.model.")
+        else:
             if not self.inference.model:
                 errors.append("Model is not set. Use --model or set inference.model.")
 

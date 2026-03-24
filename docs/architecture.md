@@ -11,6 +11,7 @@ src/adele_runner/
 
   adapters/
     foundry_inference.py  ← Azure AI Foundry async adapter
+    google_genai.py       ← Google Gemini async adapter
     azure_openai_batch.py ← Azure OpenAI Batch API adapter
 
   datasets/
@@ -55,7 +56,11 @@ src/adele_runner/
                   │ (async)        │                   │ BatchAdapter    │
                   └───────┬────────┘                   └────────┬────────┘
                           │                                     │
-                          └──────────────┬──────────────────────┘
+                          │                   ┌─────────────────▼──────┐
+                          │                   │ GoogleGenAIAdapter     │
+                          │                   │ (async)                │
+                          │                   └─────────────────┬──────┘
+                          └──────────────┬──────────────────────┴──────┘
                                          ▼
                                ┌──────────────────┐
                                │  outputs.jsonl   │
@@ -111,9 +116,10 @@ All infrastructure-specific code lives in `adapters/`. The pipeline modules depe
 | Adapter | Module | SDK | Use case |
 |---|---|---|---|
 | `FoundryAdapter` | `foundry_inference.py` | `azure-ai-inference` | Any model deployed in Azure AI Foundry |
+| `GoogleGenAIAdapter` | `google_genai.py` | `google-genai` | Direct Gemini API inference |
 | `AzureOpenAIBatchAdapter` | `azure_openai_batch.py` | `openai` | Azure OpenAI deployments with Batch API support |
 
-Both adapters produce `InferenceOutput` objects. The `inference_runner` dispatches to the appropriate adapter based on `config.resolve_inference_mode()`.
+All inference adapters produce `InferenceOutput` objects. The `inference_runner` dispatches to the appropriate adapter based on `config.resolve_inference_mode()`.
 
 ### Judge Adapters
 
@@ -180,7 +186,7 @@ apply_cli_overrides()   ← --run-id, --model, --mode, --judge, --judge-template
     │
     ▼
 apply_rate_limit_overrides()  ← Auto-compute concurrency from TPM/RPM
-    │                            (foundry provider only; re-applied before judging)
+    │                            (async inference providers; re-applied before judging)
     ▼
 validate_config()       ← Placeholder detection, required fields
 ```

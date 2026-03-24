@@ -88,6 +88,25 @@ def test_missing_batch_model():
     assert any("model" in e.lower() for e in errors)
 
 
+def test_google_mode_does_not_require_azure_endpoint():
+    cfg = _cfg(
+        inference={"mode": "google", "model": "gemini-2.5-flash"},
+        judging={"enabled": False},
+    )
+    errors = cfg.validate_config()
+    endpoint_errors = [e for e in errors if "endpoint" in e.lower()]
+    assert len(endpoint_errors) == 0
+
+
+def test_google_mode_requires_model():
+    cfg = _cfg(
+        inference={"mode": "google", "model": ""},
+        judging={"enabled": False},
+    )
+    errors = cfg.validate_config()
+    assert any("model" in e.lower() for e in errors)
+
+
 # ---------------------------------------------------------------------------
 # Judging validation
 # ---------------------------------------------------------------------------
