@@ -43,6 +43,7 @@ inference:
   temperature: 0.0
   max_tokens: 50000
   top_p: 1.0
+  # budget_usd: 25.00              # Optional hard stop budget for this inference lane
   # rate_limits:                    # Optional request-response or batch budgets
   #   tokens_per_minute: 80000
   #   requests_per_minute: 300
@@ -60,6 +61,7 @@ judging:
       mode: "request_response"
       model: "<FOUNDRY_GPT4O_MODEL_ID>"
       # max_tokens: 512         # Max completion tokens for this judge (default: 512)
+      # budget_usd: 10.00       # Optional hard stop budget for this judge lane
       # rate_limits:            # Optional request-response or batch budgets
       #   tokens_per_minute: 80000
       #   requests_per_minute: 300
@@ -95,6 +97,7 @@ pricing:
     # gpt4o:
     #   prompt_per_1k: 2.50
     #   completion_per_1k: 10.00
+  # budget_usd requires pricing.enabled=true and a matching entry in pricing.models
 
 logging:
   level: "INFO"

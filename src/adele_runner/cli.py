@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from adele_runner.config import AppConfig, JudgeConfig, RateLimitsConfig, load_config
+from adele_runner.runtime.budgeting import BudgetExceededError
 from adele_runner.runtime.resolution import (
     resolve_inference_plan,
     resolve_judge_plans,
@@ -22,6 +23,7 @@ from adele_runner.schemas import InferenceOutput
 
 _VALID_MODES = {"request_response", "batch", "auto"}
 _VALID_PROVIDERS = {"azure_openai", "azure_ai_inference", "google_genai", "anthropic"}
+_BUDGET_EXIT_CODE = 3
 
 app = typer.Typer(
     name="adele-runner",
@@ -201,6 +203,19 @@ def _validate_or_exit(cfg: AppConfig, *, dry_run: bool = False) -> None:
         raise typer.Exit(1)
 
 
+def _exit_for_budget(exc: BudgetExceededError) -> None:
+    kind = "estimated" if exc.estimated else "actual"
+    logging.getLogger(__name__).warning(
+        "Budget exhausted: lane=%s pricing_key=%s spent=$%.6f budget=$%.6f [%s]",
+        exc.lane_name,
+        exc.pricing_key,
+        exc.spent_usd,
+        exc.budget_usd,
+        kind,
+    )
+    raise typer.Exit(_BUDGET_EXIT_CODE)
+
+
 def _load_ground_truths(cfg: AppConfig) -> dict[str, str]:
     """Load ground truths, preferring a cached file in the run dir.
 
@@ -273,6 +288,8 @@ def _print_dry_run(
         f"(effective transport={inference_plan.binding.execution_kind})"
     )
     console.print(f"  Model:          {model}")
+    if cfg.inference.budget_usd is not None:
+        console.print(f"  Budget:         ${cfg.inference.budget_usd:.6f} (inference lane)")
 
     # Dedup info
     outputs_path = cfg.outputs_path()
@@ -289,6 +306,9 @@ def _print_dry_run(
         console.print(
             f"  Judges:         {', '.join(judge_names) if judge_names else '(none configured)'}"
         )
+        judge_budgets = [f"{judge.name}=${judge.budget_usd:.6f}" for judge in cfg.judging.judges if judge.budget_usd is not None]
+        if judge_budgets:
+            console.print(f"  Judge budgets:  {', '.join(judge_budgets)}")
     else:
         console.print("  Judging:        disabled")
 
@@ -403,7 +423,10 @@ def run_inference(
         return
 
     _validate_or_exit(cfg)
-    asyncio.run(_run(cfg, items))
+    try:
+        asyncio.run(_run(cfg, items))
+    except BudgetExceededError as exc:
+        _exit_for_budget(exc)
     console.print("[bold green]Inference complete.[/bold green]")
 
 
@@ -458,7 +481,10 @@ def run_judge(
     # Load ground truths (with caching)
     ground_truths = _load_ground_truths(cfg)
 
-    asyncio.run(_run(cfg, inference_outputs, ground_truths))
+    try:
+        asyncio.run(_run(cfg, inference_outputs, ground_truths))
+    except BudgetExceededError as exc:
+        _exit_for_budget(exc)
     console.print("[bold green]Judging complete.[/bold green]")
 
 
@@ -554,15 +580,21 @@ def run_all(
     _validate_or_exit(cfg)
 
     # 1. Inference
-    asyncio.run(_run_inference(cfg, items))
+    try:
+        asyncio.run(_run_inference(cfg, items))
+    except BudgetExceededError as exc:
+        _exit_for_budget(exc)
     console.print("[bold green]Inference complete.[/bold green]")
 
     # 2. Judging (re-tune concurrency for judge rate limits)
     if cfg.judging.enabled:
         inference_outputs = read_jsonl(cfg.outputs_path(), InferenceOutput)
         ground_truths = _load_ground_truths(cfg)
+    try:
         asyncio.run(_run_judge(cfg, inference_outputs, ground_truths))
-        console.print("[bold green]Judging complete.[/bold green]")
+    except BudgetExceededError as exc:
+        _exit_for_budget(exc)
+    console.print("[bold green]Judging complete.[/bold green]")
 
     # 3. Merge
     path = _merge(cfg)

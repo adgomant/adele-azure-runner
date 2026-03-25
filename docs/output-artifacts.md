@@ -86,7 +86,7 @@ df = pd.read_parquet("runs/adele_dev_run/merged_results.parquet")
 
 ## `run_manifest.json`
 
-Run provenance metadata. Written at the start of inference, updated at the end.
+Run provenance metadata. Written at the start of inference, updated at the end or on an early budget stop.
 
 | Field | Type | Description |
 |---|---|---|
@@ -100,6 +100,8 @@ Run provenance metadata. Written at the start of inference, updated at the end.
 | `code_version` | `str` | Runner version |
 | `total_instances` | `int` | Total instances to process |
 | `completed_instances` | `int` | Instances completed so far |
+
+When inference stops because `budget_usd` is exhausted, the manifest still records the final `completed_instances` and `end_time` for the partial run.
 
 ## `metrics.json`
 

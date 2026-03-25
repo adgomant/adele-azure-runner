@@ -78,6 +78,18 @@ The runner writes a `run_manifest.json` at the start of inference:
 
 After inference completes, the manifest is updated with `end_time` and `completed_instances`.
 
+The same finalization also happens when inference stops early because a configured runtime budget is exhausted, so resumed runs still have accurate checkpoint metadata.
+
+## Budget Stops
+
+Runtime budget enforcement is designed to work with the existing append-only and dedup-based resume flow.
+
+- request-response runs write each completed output first, then charge the budget
+- batch runs stop before submitting a chunk whose estimated worst-case cost would exceed the remaining budget
+- if a completed response or chunk pushes actual spend over budget, the runner exits and leaves all completed outputs on disk
+
+To continue after a budget stop, increase or remove the budget in config and rerun the same command with the same `run_id`. The dedup index skips everything already written.
+
 ## Safe Practices
 
 - Always use the same `run_id` when resuming a run. A different `run_id` creates a new output directory.

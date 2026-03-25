@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from adele_runner.config import AppConfig
+from adele_runner.runtime.budgeting import BudgetTracker
 from adele_runner.runtime.executors import (
     BatchExecutor,
     RequestResponseExecutor,
@@ -18,6 +19,21 @@ from adele_runner.stages.judging import build_judge_output, build_judge_request
 from adele_runner.utils.io import append_jsonl, build_dedup_index, ensure_run_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _build_judge_budget_tracker(config: AppConfig, judge_name: str) -> BudgetTracker | None:
+    judge_cfg = next((judge for judge in config.judging.judges if judge.name == judge_name), None)
+    if judge_cfg is None or judge_cfg.budget_usd is None:
+        return None
+    model_pricing = config.pricing.get_model_pricing(judge_name)
+    if model_pricing is None:
+        raise ValueError(f"No pricing configured for judge '{judge_name}'.")
+    return BudgetTracker(
+        lane_name=f"judge:{judge_name}",
+        pricing_key=judge_name,
+        budget_usd=judge_cfg.budget_usd,
+        model_pricing=model_pricing,
+    )
 
 
 async def _run_request_response_judges(
@@ -36,6 +52,7 @@ async def _run_request_response_judges(
         target = plan.target
         binding = plan.binding
         settings = plan.settings
+        budget_tracker = _build_judge_budget_tracker(config, target.judge_name)
         rate_limiter = create_rate_limiter(settings)
         adapter = binding.create_adapter(
             config,
@@ -65,6 +82,7 @@ async def _run_request_response_judges(
         def _record_response(
             response: ChatResponse | BaseException,
             _request_meta: dict[str, tuple[ResolvedJudgeTarget, InferenceOutput, str]] = request_meta,
+            _budget_tracker: BudgetTracker | None = budget_tracker,
         ) -> None:
             if isinstance(response, BaseException):
                 return
@@ -82,6 +100,11 @@ async def _run_request_response_judges(
             )
             append_jsonl(judge_path, output)
             outputs.append(output)
+            if _budget_tracker is not None:
+                _budget_tracker.record_actual_usage(
+                    prompt_tokens=output.tokens_prompt,
+                    completion_tokens=output.tokens_completion,
+                )
 
         await RequestResponseExecutor().execute(
             adapter=adapter,
@@ -111,7 +134,8 @@ async def _run_batch_judges(
         target = plan.target
         binding = plan.binding
         settings = plan.settings
-        adapter = binding.create_adapter(config)
+        budget_tracker = _build_judge_budget_tracker(config, target.judge_name)
+        adapter = binding.create_adapter(config, budget_tracker=budget_tracker)
         requests = []
         request_meta: dict[str, tuple[InferenceOutput, str]] = {}
 
@@ -129,31 +153,46 @@ async def _run_batch_judges(
             continue
 
         logger.info("Batch judge [%s]: %d tasks pending.", target.judge_name, len(requests))
-        responses = await BatchExecutor().execute(
-            adapter=adapter,
-            requests=requests,
-            run_dir=run_dir,
-            settings=settings,
-        )
-        for response in responses:
-            meta = request_meta.get(response.request_id)
+
+        def _record_response(
+            response: ChatResponse | BaseException,
+            _request_meta: dict[str, tuple[InferenceOutput, str]] = request_meta,
+            _target: ResolvedJudgeTarget = target,
+            _budget_tracker: BudgetTracker | None = budget_tracker,
+        ) -> None:
+            if isinstance(response, BaseException):
+                return
+            meta = _request_meta.get(response.request_id)
             if meta is None:
                 logger.warning(
                     "Batch judge [%s]: unknown request_id %s",
-                    target.judge_name,
+                    _target.judge_name,
                     response.request_id,
                 )
-                continue
+                return
             inference_output, judge_prompt = meta
             output = build_judge_output(
                 inference_output,
-                target,
+                _target,
                 judge_prompt,
                 response,
                 config.run.run_id,
             )
             append_jsonl(judge_path, output)
             all_outputs.append(output)
+            if _budget_tracker is not None:
+                _budget_tracker.record_actual_usage(
+                    prompt_tokens=output.tokens_prompt,
+                    completion_tokens=output.tokens_completion,
+                )
+
+        await BatchExecutor().execute(
+            adapter=adapter,
+            requests=requests,
+            run_dir=run_dir,
+            settings=settings,
+            on_result=_record_response,
+        )
 
     return all_outputs
 

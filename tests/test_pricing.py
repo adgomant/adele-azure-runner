@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from adele_runner.config import AppConfig
+from adele_runner.runtime.types import ChatMessage, ChatRequest
 from adele_runner.schemas import InferenceOutput, JudgeOutput
+from adele_runner.utils.pricing import estimate_batch_request_cost_usd, estimate_cost_usd
 
 
 def _write_jsonl(path: Path, records: list) -> None:
@@ -213,3 +215,26 @@ def test_metrics_json_export(tmp_path):
     data = json.loads(metrics_path.read_text())
     assert "per_judge" in data
     assert "verification" in data
+
+
+def test_runtime_cost_helper_matches_metrics_formula():
+    pricing = AppConfig.model_validate(
+        {"pricing": {"enabled": True, "models": {"m": {"prompt_per_1k": 2.5, "completion_per_1k": 10.0}}}}
+    ).pricing.models["m"]
+    cost = estimate_cost_usd(1_000, 500, pricing)
+    assert cost == pytest.approx(7.5, abs=0.000001)
+
+
+def test_batch_cost_estimate_is_conservative():
+    pricing = AppConfig.model_validate(
+        {"pricing": {"enabled": True, "models": {"m": {"prompt_per_1k": 1.0, "completion_per_1k": 2.0}}}}
+    ).pricing.models["m"]
+    request = ChatRequest(
+        request_id="r1",
+        model="m",
+        messages=(ChatMessage(role="user", content="x" * 300),),
+        max_tokens=200,
+    )
+    estimated = estimate_batch_request_cost_usd(request, pricing)
+    actual = estimate_cost_usd(90, 150, pricing)
+    assert estimated >= actual

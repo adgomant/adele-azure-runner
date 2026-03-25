@@ -17,7 +17,7 @@ from adele_runner.runtime.types import (
 )
 
 RequestFactory = Callable[..., Any]
-BatchFactory = Callable[[AppConfig], Any]
+BatchFactory = Callable[..., Any]
 CapabilityResolver = Callable[[AppConfig, ResolvedProviderTarget, ExecutionMode], CapabilityResolution]
 
 _AZURE_BATCH_DEPLOYMENT_TYPES = {"global_batch", "data_zone_batch"}
@@ -120,10 +120,10 @@ def _build_azure_openai_request(config: AppConfig, **kwargs):  # noqa: ANN003
     return AzureOpenAIRequestResponseAdapter(config, **kwargs)
 
 
-def _build_azure_openai_batch(config: AppConfig):
+def _build_azure_openai_batch(config: AppConfig, **kwargs):  # noqa: ANN003
     from adele_runner.adapters.providers.azure_openai.batch import AzureOpenAIBatchAdapter
 
-    return AzureOpenAIBatchAdapter(config)
+    return AzureOpenAIBatchAdapter(config, **kwargs)
 
 
 def _build_azure_ai_inference_request(config: AppConfig, **kwargs):  # noqa: ANN003
@@ -142,10 +142,10 @@ def _build_google_request(config: AppConfig, **kwargs):  # noqa: ANN003
     return GoogleGenAIRequestResponseAdapter(config, **kwargs)
 
 
-def _build_google_batch(config: AppConfig):
+def _build_google_batch(config: AppConfig, **kwargs):  # noqa: ANN003
     from adele_runner.adapters.providers.google_genai.batch import GoogleGenAIBatchAdapter
 
-    return GoogleGenAIBatchAdapter(config)
+    return GoogleGenAIBatchAdapter(config, **kwargs)
 
 
 def _build_anthropic_request(config: AppConfig, **kwargs):  # noqa: ANN003
@@ -156,10 +156,10 @@ def _build_anthropic_request(config: AppConfig, **kwargs):  # noqa: ANN003
     return AnthropicRequestResponseAdapter(config, **kwargs)
 
 
-def _build_anthropic_batch(config: AppConfig):
+def _build_anthropic_batch(config: AppConfig, **kwargs):  # noqa: ANN003
     from adele_runner.adapters.providers.anthropic.batch import AnthropicBatchAdapter
 
-    return AnthropicBatchAdapter(config)
+    return AnthropicBatchAdapter(config, **kwargs)
 
 
 PROVIDER_REGISTRY: dict[ProviderKind, ProviderDescriptor] = {

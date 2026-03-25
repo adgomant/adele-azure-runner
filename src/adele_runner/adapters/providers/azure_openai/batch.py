@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +27,14 @@ class AzureOpenAIBatchAdapter:
 
     capabilities = AdapterCapabilities(request_response=False, batch=True)
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        budget_tracker: object | None = None,
+    ) -> None:
         self._cfg = config
         self._client = self._build_client()
+        self._budget_tracker = budget_tracker
 
     def _build_client(self) -> Any:
         try:
@@ -78,10 +84,10 @@ class AzureOpenAIBatchAdapter:
         requests: list[ChatRequest],
         run_dir: Path,
         settings: ExecutionSettings,
+        on_chunk_completed: Callable[[list[ChatResponse]], None] | None = None,
     ) -> list[ChatResponse]:
-        from adele_runner.utils.batch_split import split_batch_requests
+        from adele_runner.utils.batch_split import split_items_by_limits
 
-        jsonl_lines = self._build_batch_lines(requests)
         batch_cfg = self._cfg.providers.azure_openai
         batch_budget = settings.batch_budget
         max_requests = batch_cfg.max_requests_per_file
@@ -93,11 +99,15 @@ class AzureOpenAIBatchAdapter:
             if batch_budget.max_bytes_per_batch is not None:
                 max_bytes = min(max_bytes, batch_budget.max_bytes_per_batch)
             max_tokens = batch_budget.batch_enqueued_tokens
-        chunks = split_batch_requests(
-            jsonl_lines,
-            max_requests=max_requests,
+        chunks = split_items_by_limits(
+            requests,
+            size_getter=lambda request: len(
+                self._build_batch_lines([request])[0].encode("utf-8")
+            )
+            + 1,
+            token_getter=self._estimate_request_tokens,
+            max_items=max_requests,
             max_bytes=max_bytes,
-            token_estimates=[self._estimate_request_tokens(request) for request in requests],
             max_tokens=max_tokens,
         )
         request_map = {request.request_id: request for request in requests}
@@ -108,6 +118,8 @@ class AzureOpenAIBatchAdapter:
         last_submit_at = 0.0
 
         for chunk_idx, chunk in enumerate(chunks):
+            if self._budget_tracker is not None:
+                self._budget_tracker.can_submit_batch_chunk(chunk)  # type: ignore[attr-defined]
             if submit_interval_s > 0 and last_submit_at > 0:
                 elapsed = time.monotonic() - last_submit_at
                 if elapsed < submit_interval_s:
@@ -116,11 +128,13 @@ class AzureOpenAIBatchAdapter:
             input_path = run_dir / f"batch_input{suffix}.jsonl"
             input_path.parent.mkdir(parents=True, exist_ok=True)
             with input_path.open("w", encoding="utf-8") as fh:
-                for line in chunk:
+                for line in self._build_batch_lines(chunk):
                     fh.write(line + "\n")
 
             last_submit_at = time.monotonic()
             chunk_outputs = self._submit_and_poll(input_path, request_map, settings)
+            if on_chunk_completed is not None:
+                on_chunk_completed(chunk_outputs)
             all_outputs.extend(chunk_outputs)
 
         logger.info("Batch completed: %d total results.", len(all_outputs))

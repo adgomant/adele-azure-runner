@@ -11,6 +11,7 @@ from typing import Any
 from adele_runner.config import AppConfig
 from adele_runner.schemas import InferenceOutput, JudgeOutput
 from adele_runner.utils.io import iter_jsonl
+from adele_runner.utils.pricing import estimate_cost_usd
 
 logger = logging.getLogger(__name__)
 
@@ -135,9 +136,10 @@ def summarize(config: AppConfig) -> dict[str, Any]:
             model_pricing = config.pricing.models.get(model_id)
             if model_pricing is None:
                 continue
-            cost = (
-                usage["prompt_tokens"] / 1000.0 * model_pricing.prompt_per_1k
-                + usage["completion_tokens"] / 1000.0 * model_pricing.completion_per_1k
+            cost = estimate_cost_usd(
+                usage["prompt_tokens"],
+                usage["completion_tokens"],
+                model_pricing,
             )
             estimated_cost[model_id] = round(cost, 6)
 

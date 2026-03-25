@@ -102,6 +102,7 @@ class InferenceConfig(BaseModel):
     max_tokens: int = 2048
     top_p: float = 1.0
     rate_limits: RateLimitsConfig | None = None
+    budget_usd: float | None = None
 
 
 class ConcurrencyConfig(BaseModel):
@@ -122,6 +123,7 @@ class JudgeConfig(BaseModel):
     model: str
     rate_limits: RateLimitsConfig | None = None
     max_tokens: int = 512
+    budget_usd: float | None = None
 
 
 class JudgingConfig(BaseModel):
@@ -152,6 +154,9 @@ class PricingConfig(BaseModel):
     @classmethod
     def _coerce_none(cls, v: Any) -> Any:
         return v if v is not None else {}
+
+    def get_model_pricing(self, key: str) -> ModelPricing | None:
+        return self.models.get(key)
 
 
 def compute_concurrency_from_rate_limits(
@@ -355,6 +360,13 @@ class AppConfig(BaseModel):
                 f"Unknown judge prompt template: '{self.judging.prompt_template}'. Use 'v1' or 'v2'."
             )
 
+        self._validate_budget_fields(
+            budget_usd=self.inference.budget_usd,
+            pricing_key=self.inference.model,
+            errors=errors,
+            context="Inference",
+        )
+
         for judge in self.judging.judges:
             self._validate_provider_connection(judge.provider, errors)
             self._validate_target_mode_support(
@@ -362,6 +374,12 @@ class AppConfig(BaseModel):
                 judge.mode,
                 judge.model,
                 errors,
+                context=f"Judge '{judge.name}'",
+            )
+            self._validate_budget_fields(
+                budget_usd=judge.budget_usd,
+                pricing_key=judge.name,
+                errors=errors,
                 context=f"Judge '{judge.name}'",
             )
             self._validate_rate_limit_fields(
@@ -433,6 +451,29 @@ class AppConfig(BaseModel):
 
     def run_dir(self) -> Path:
         return Path(self.run.output_dir) / self.run.run_id
+
+    def _validate_budget_fields(
+        self,
+        *,
+        budget_usd: float | None,
+        pricing_key: str,
+        errors: list[str],
+        context: str,
+    ) -> None:
+        if budget_usd is None:
+            return
+        if budget_usd <= 0:
+            errors.append(f"{context}: budget_usd must be greater than 0.")
+        if not self.pricing.enabled:
+            errors.append(f"{context}: budget_usd requires pricing.enabled=true.")
+            return
+        if not pricing_key:
+            errors.append(f"{context}: budget_usd requires a pricing key.")
+            return
+        if pricing_key not in self.pricing.models:
+            errors.append(
+                f"{context}: budget_usd requires pricing.models.{pricing_key} to be configured."
+            )
 
     def outputs_path(self) -> Path:
         return self.run_dir() / "outputs.jsonl"

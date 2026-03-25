@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +28,14 @@ class AnthropicBatchAdapter:
 
     capabilities = AdapterCapabilities(request_response=False, batch=True)
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        budget_tracker: object | None = None,
+    ) -> None:
         self._cfg = config
         self._client = self._build_client()
+        self._budget_tracker = budget_tracker
 
     def _build_client(self) -> Any:
         try:
@@ -47,6 +53,7 @@ class AnthropicBatchAdapter:
         requests: list[ChatRequest],
         run_dir: Path,
         settings: ExecutionSettings,
+        on_chunk_completed: Callable[[list[ChatResponse]], None] | None = None,
     ) -> list[ChatResponse]:
         _ = run_dir
         batch_budget = settings.batch_budget
@@ -72,6 +79,8 @@ class AnthropicBatchAdapter:
         last_submit_at = 0.0
 
         for chunk in chunks:
+            if self._budget_tracker is not None:
+                self._budget_tracker.can_submit_batch_chunk(chunk)  # type: ignore[attr-defined]
             if submit_interval_s > 0 and last_submit_at > 0:
                 elapsed = time.monotonic() - last_submit_at
                 if elapsed < submit_interval_s:
@@ -89,7 +98,10 @@ class AnthropicBatchAdapter:
                 time.sleep(_POLL_INTERVAL_S)
                 batch = self._client.messages.batches.retrieve(batch.id)
 
-            outputs.extend(self._extract_results(batch.id, chunk))
+            chunk_outputs = self._extract_results(batch.id, chunk)
+            if on_chunk_completed is not None:
+                on_chunk_completed(chunk_outputs)
+            outputs.extend(chunk_outputs)
 
         return outputs
 

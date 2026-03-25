@@ -105,6 +105,7 @@ This is especially important for `azure_openai` batch validation.
 | `max_tokens` | `int` | `2048` |
 | `top_p` | `float` | `1.0` |
 | `rate_limits` | `object \| null` | `null` |
+| `budget_usd` | `float \| null` | `null` |
 
 `mode=auto` resolves within the chosen provider, not across providers.
 
@@ -122,6 +123,8 @@ This is especially important for `azure_openai` batch validation.
 - `batch_enqueued_tokens`
 
 For `google_genai` with `backend: gemini_api`, daily budgets such as `requests_per_day` follow the Gemini API reset window at midnight Pacific time.
+
+`budget_usd` is an optional hard stop for the inference lane. It is enforced at runtime using the pricing entry keyed by `inference.model`. When the lane reaches or exceeds the budget, the runner logs the stop and exits with code `3`.
 
 ## `concurrency`
 
@@ -155,8 +158,11 @@ Each judge:
 | `model` | `str` | required |
 | `rate_limits` | `object \| null` | `null` |
 | `max_tokens` | `int` | `512` |
+| `budget_usd` | `float \| null` | `null` |
 
 Request-response judges use `rate_limits` for adaptive pacing. Batch judges use the same block for queue and enqueued-token budgets when configured.
+
+`budget_usd` applies independently per judge lane. Judge runtime budgeting uses the pricing entry keyed by `judging.judges[].name`, not by the underlying `model`.
 
 ## Environment Variables
 
@@ -178,6 +184,10 @@ Examples:
 - `google_genai + vertex_ai` requires `project` and `location`
 - inference requires a model
 - judging requires at least one judge when enabled
+- `budget_usd` must be greater than `0`
+- `budget_usd` requires `pricing.enabled=true`
+- inference `budget_usd` requires `pricing.models.<inference.model>`
+- judge `budget_usd` requires `pricing.models.<judging.judges[].name>`
 
 Use `--dry-run` to validate a plan without making API calls.
 
@@ -199,6 +209,19 @@ That affects:
 - retry backoff
 
 Batch lanes use provider-specific file or payload splitting plus optional queue budgets such as `batch_queue_requests` and `batch_enqueued_tokens`.
+
+## Runtime Budgets
+
+Runtime budgets are config-only in this version. There are no CLI flags for them.
+
+Request-response lanes are charged reactively from actual token usage after each response is written. That means the run stops on the first response that causes spend to cross the configured threshold.
+
+Batch lanes are charged in two steps:
+
+- pre-submit admission uses a conservative estimate based on prompt character count and `max_tokens`
+- post-completion reconciliation uses the actual token usage returned by the provider
+
+This design may stop batch runs slightly early, but it avoids knowingly submitting work whose worst-case cost would exceed the remaining budget.
 
 ## Example
 
@@ -224,6 +247,7 @@ inference:
   provider: azure_ai_inference
   mode: request_response
   model: gpt-4o
+  budget_usd: 25
   rate_limits:
     tokens_per_minute: 80000
     requests_per_minute: 300
@@ -236,12 +260,26 @@ judging:
       provider: azure_ai_inference
       mode: request_response
       model: gpt-4o
+      budget_usd: 10
     - name: claude-batch
       provider: anthropic
       mode: batch
       model: claude-sonnet-4-5
       rate_limits:
         batch_queue_requests: 50000
+
+pricing:
+  enabled: true
+  models:
+    gpt-4o:
+      prompt_per_1k: 2.5
+      completion_per_1k: 10.0
+    gpt4o-judge:
+      prompt_per_1k: 2.5
+      completion_per_1k: 10.0
+    claude-batch:
+      prompt_per_1k: 3.0
+      completion_per_1k: 15.0
 ```
 
 ## Breaking Change

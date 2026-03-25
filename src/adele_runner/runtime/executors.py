@@ -10,7 +10,7 @@ from typing import Protocol
 
 from adele_runner.config import RateLimitsConfig
 from adele_runner.runtime.types import ChatRequest, ChatResponse, ExecutionSettings
-from adele_runner.utils.concurrency import AsyncRateLimiter, bounded_gather
+from adele_runner.utils.concurrency import AsyncRateLimiter
 from adele_runner.utils.retry import make_retry_decorator
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,7 @@ class BatchTransport(Protocol):
         requests: list[ChatRequest],
         run_dir: Path,
         settings: ExecutionSettings,
+        on_chunk_completed: Callable[[list[ChatResponse]], None] | None = None,
     ) -> list[ChatResponse]: ...
 
 
@@ -85,28 +86,64 @@ class RequestResponseExecutor:
             rate_limiter=rate_limiter,
         )
 
-        completed: list[ChatResponse] = []
-        chunk_size = settings.max_in_flight * 4
-        for chunk_start in range(0, len(requests), chunk_size):
-            chunk = requests[chunk_start : chunk_start + chunk_size]
-            tasks = [
-                _send_with_retry(adapter, request, settings, retry_dec) for request in chunk
-            ]
-            results = await bounded_gather(
-                tasks,
-                max_concurrency=settings.max_in_flight,
-                rate_limiter=rate_limiter,
-            )
-            for result in results:
-                if isinstance(result, BaseException):
-                    logger.error("Request-response task failed (skipping): %s", result)
-                    if on_result is not None:
-                        on_result(result)
-                    continue
-                completed.append(result)
-                if on_result is not None:
-                    on_result(result)
+        results: list[ChatResponse | BaseException | None] = [None] * len(requests)
+        queue: asyncio.Queue[tuple[int, ChatRequest]] = asyncio.Queue()
+        stop_dispatch = asyncio.Event()
+        callback_error: BaseException | None = None
 
+        for idx, request in enumerate(requests):
+            queue.put_nowait((idx, request))
+
+        async def _worker() -> None:
+            nonlocal callback_error
+            while not stop_dispatch.is_set():
+                try:
+                    idx, request = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+
+                try:
+                    if rate_limiter is not None:
+                        await rate_limiter.acquire()
+                    response = await _send_with_retry(adapter, request, settings, retry_dec)
+                    results[idx] = response
+                    if on_result is not None:
+                        try:
+                            on_result(response)
+                        except BaseException as callback_exc:  # noqa: BLE001
+                            callback_error = callback_exc
+                            stop_dispatch.set()
+                            return
+                except Exception as exc:  # noqa: BLE001
+                    results[idx] = exc
+                    if on_result is not None:
+                        try:
+                            on_result(exc)
+                        except BaseException as callback_exc:  # noqa: BLE001
+                            callback_error = callback_exc
+                            stop_dispatch.set()
+                            return
+                    logger.error("Request-response task failed (skipping): %s", exc)
+                finally:
+                    queue.task_done()
+
+        workers = [
+            asyncio.create_task(_worker(), name=f"request-response-worker-{idx}")
+            for idx in range(max(1, settings.max_in_flight))
+        ]
+
+        worker_results = await asyncio.gather(*workers, return_exceptions=True)
+        for worker_result in worker_results:
+            if isinstance(worker_result, BaseException) and callback_error is None:
+                callback_error = worker_result
+
+        if callback_error is not None:
+            raise callback_error
+
+        completed: list[ChatResponse] = []
+        for result in results:
+            if isinstance(result, ChatResponse):
+                completed.append(result)
         return completed
 
 
@@ -125,8 +162,20 @@ class BatchExecutor:
         if not requests:
             return []
 
-        responses = await asyncio.to_thread(adapter.run_batch, requests, run_dir, settings)
-        for response in responses:
-            if on_result is not None:
-                on_result(response)
-        return responses
+        def _handle_chunk(chunk: list[ChatResponse]) -> None:
+            for response in chunk:
+                if on_result is not None:
+                    on_result(response)
+
+        try:
+            return await asyncio.to_thread(
+                adapter.run_batch,
+                requests,
+                run_dir,
+                settings,
+                _handle_chunk,
+            )
+        except TypeError:
+            responses = await asyncio.to_thread(adapter.run_batch, requests, run_dir, settings)
+            _handle_chunk(responses)
+            return responses

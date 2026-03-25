@@ -108,3 +108,57 @@ def test_anthropic_batch_limits_reject_excess_queue_budget():
     )
     errors = cfg.validate_config()
     assert any("batch_queue_requests" in error for error in errors)
+
+
+def test_budget_requires_pricing_enabled():
+    cfg = _cfg(
+        providers={"azure_ai_inference": {"endpoint": "https://real.ai.azure.com"}},
+        inference={
+            "provider": "azure_ai_inference",
+            "mode": "request_response",
+            "model": "gpt-4o",
+            "budget_usd": 5.0,
+        },
+        judging={"enabled": False},
+        pricing={"enabled": False},
+    )
+    errors = cfg.validate_config()
+    assert any("pricing.enabled=true" in error for error in errors)
+
+
+def test_budget_requires_matching_pricing_entry():
+    cfg = _cfg(
+        providers={"azure_ai_inference": {"endpoint": "https://real.ai.azure.com"}},
+        inference={
+            "provider": "azure_ai_inference",
+            "mode": "request_response",
+            "model": "gpt-4o",
+            "budget_usd": 5.0,
+        },
+        judging={"enabled": False},
+        pricing={"enabled": True, "models": {"other-model": {"prompt_per_1k": 1.0, "completion_per_1k": 2.0}}},
+    )
+    errors = cfg.validate_config()
+    assert any("pricing.models.gpt-4o" in error for error in errors)
+
+
+def test_judge_budget_requires_pricing_key_by_judge_name():
+    cfg = _cfg(
+        providers={"azure_ai_inference": {"endpoint": "https://real.ai.azure.com"}},
+        inference={"provider": "azure_ai_inference", "mode": "request_response", "model": "gpt-4o"},
+        judging={
+            "enabled": True,
+            "judges": [
+                {
+                    "name": "judge-a",
+                    "provider": "azure_ai_inference",
+                    "mode": "request_response",
+                    "model": "gpt-4o",
+                    "budget_usd": 1.0,
+                }
+            ],
+        },
+        pricing={"enabled": True, "models": {"gpt-4o": {"prompt_per_1k": 1.0, "completion_per_1k": 2.0}}},
+    )
+    errors = cfg.validate_config()
+    assert any("pricing.models.judge-a" in error for error in errors)
