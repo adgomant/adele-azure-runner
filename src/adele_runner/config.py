@@ -333,70 +333,80 @@ class AppConfig(BaseModel):
                 f"{context}: target '{model}' is not marked as batch-capable for provider 'azure_openai'."
             )
 
-    def validate_config(self, *, dry_run: bool = False) -> list[str]:
+    def validate_config(
+        self,
+        *,
+        dry_run: bool = False,
+        validate_inference: bool = True,
+        validate_judging: bool = True,
+    ) -> list[str]:
         """Validate config for common mistakes. Returns list of error messages."""
         _ = dry_run
         errors: list[str] = []
 
-        if not self.inference.model:
-            errors.append("Model is not set. Use --model or set inference.model.")
-        else:
-            self._validate_provider_connection(self.inference.provider, errors)
-            self._validate_target_mode_support(
-                self.inference.provider,
-                self.inference.mode,
-                self.inference.model,
-                errors,
-                context="Inference",
-            )
+        if validate_inference:
+            if not self.inference.model:
+                errors.append("Model is not set. Use --model or set inference.model.")
+            else:
+                self._validate_provider_connection(self.inference.provider, errors)
+                self._validate_target_mode_support(
+                    self.inference.provider,
+                    self.inference.mode,
+                    self.inference.model,
+                    errors,
+                    context="Inference",
+                )
 
-        if self.judging.enabled and not self.judging.judges:
+        if validate_judging and self.judging.enabled and not self.judging.judges:
             errors.append(
                 "Judging is enabled but no judges configured. Use --judge or set judging.judges."
             )
 
-        if self.judging.prompt_template not in ("v1", "v2"):
+        if validate_judging and self.judging.prompt_template not in ("v1", "v2"):
             errors.append(
                 f"Unknown judge prompt template: '{self.judging.prompt_template}'. Use 'v1' or 'v2'."
             )
 
-        self._validate_budget_fields(
-            budget_usd=self.inference.budget_usd,
-            pricing_key=self.inference.model,
-            errors=errors,
-            context="Inference",
-        )
-
-        for judge in self.judging.judges:
-            self._validate_provider_connection(judge.provider, errors)
-            self._validate_target_mode_support(
-                judge.provider,
-                judge.mode,
-                judge.model,
-                errors,
-                context=f"Judge '{judge.name}'",
-            )
+        if validate_inference:
             self._validate_budget_fields(
-                budget_usd=judge.budget_usd,
-                pricing_key=judge.name,
+                budget_usd=self.inference.budget_usd,
+                pricing_key=self.inference.model,
                 errors=errors,
-                context=f"Judge '{judge.name}'",
-            )
-            self._validate_rate_limit_fields(
-                judge.provider,
-                judge.mode,
-                judge.rate_limits,
-                errors,
-                context=f"Judge '{judge.name}'",
+                context="Inference",
             )
 
-        self._validate_rate_limit_fields(
-            self.inference.provider,
-            self.inference.mode,
-            self.inference.rate_limits,
-            errors,
-            context="Inference",
-        )
+        if validate_judging:
+            for judge in self.judging.judges:
+                self._validate_provider_connection(judge.provider, errors)
+                self._validate_target_mode_support(
+                    judge.provider,
+                    judge.mode,
+                    judge.model,
+                    errors,
+                    context=f"Judge '{judge.name}'",
+                )
+                self._validate_budget_fields(
+                    budget_usd=judge.budget_usd,
+                    pricing_key=judge.name,
+                    errors=errors,
+                    context=f"Judge '{judge.name}'",
+                )
+                self._validate_rate_limit_fields(
+                    judge.provider,
+                    judge.mode,
+                    judge.rate_limits,
+                    errors,
+                    context=f"Judge '{judge.name}'",
+                )
+
+        if validate_inference:
+            self._validate_rate_limit_fields(
+                self.inference.provider,
+                self.inference.mode,
+                self.inference.rate_limits,
+                errors,
+                context="Inference",
+            )
 
         from adele_runner.utils.batch_split import (
             AZURE_BATCH_MAX_FILE_BYTES,

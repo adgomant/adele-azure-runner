@@ -194,9 +194,19 @@ def apply_cli_overrides(
         cfg.inference.rate_limits = RateLimitsConfig(tokens_per_minute=tpm, requests_per_minute=rpm)
 
 
-def _validate_or_exit(cfg: AppConfig, *, dry_run: bool = False) -> None:
+def _validate_or_exit(
+    cfg: AppConfig,
+    *,
+    dry_run: bool = False,
+    validate_inference: bool = True,
+    validate_judging: bool = True,
+) -> None:
     """Run config validation and exit on errors (skip API-key checks in dry-run)."""
-    errors = cfg.validate_config(dry_run=dry_run)
+    errors = cfg.validate_config(
+        dry_run=dry_run,
+        validate_inference=validate_inference,
+        validate_judging=validate_judging,
+    )
     if errors:
         for err in errors:
             typer.echo(f"Config error: {err}", err=True)
@@ -476,7 +486,7 @@ def run_judge(
         )
         return
 
-    _validate_or_exit(cfg)
+    _validate_or_exit(cfg, validate_inference=False, validate_judging=True)
 
     # Load ground truths (with caching)
     ground_truths = _load_ground_truths(cfg)

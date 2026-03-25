@@ -162,3 +162,22 @@ def test_judge_budget_requires_pricing_key_by_judge_name():
     )
     errors = cfg.validate_config()
     assert any("pricing.models.judge-a" in error for error in errors)
+
+
+def test_judge_only_validation_skips_inference_provider_requirements():
+    cfg = _cfg(
+        inference={"provider": "azure_ai_inference", "mode": "request_response", "model": "gpt-4o"},
+        judging={
+            "enabled": True,
+            "judges": [
+                {
+                    "name": "claude-batch",
+                    "provider": "anthropic",
+                    "mode": "batch",
+                    "model": "claude-sonnet-4-5",
+                }
+            ],
+        },
+    )
+    errors = cfg.validate_config(validate_inference=False, validate_judging=True)
+    assert not any("Azure AI Inference endpoint" in error for error in errors)

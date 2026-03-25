@@ -53,6 +53,25 @@ def test_validate_or_exit_clean():
     _validate_or_exit(cfg)
 
 
+def test_validate_or_exit_judge_only_skips_inference_validation():
+    """Judge-only validation should not require unrelated inference provider config."""
+    cfg = _cfg(
+        inference={"provider": "azure_ai_inference", "mode": "request_response", "model": "gpt-4o"},
+        judging={
+            "enabled": True,
+            "judges": [
+                {
+                    "name": "j",
+                    "provider": "anthropic",
+                    "mode": "batch",
+                    "model": "claude-sonnet-4-5",
+                }
+            ],
+        },
+    )
+    _validate_or_exit(cfg, validate_inference=False, validate_judging=True)
+
+
 def test_dry_run_with_judging_disabled():
     """Dry-run should handle disabled judging gracefully."""
     cfg = _cfg(
