@@ -23,8 +23,12 @@ from adele_runner.runtime.executors import (
 from adele_runner.runtime.resolution import resolve_judge_plans
 from adele_runner.runtime.types import ChatRequest, ChatResponse, ExecutionSettings, ResolvedJudgePlan, ResolvedJudgeTarget
 from adele_runner.schemas import InferenceOutput, JudgeOutput
-from adele_runner.stages.judging import build_judge_output, build_judge_request
-from adele_runner.utils.io import append_jsonl, build_dedup_index, ensure_run_dir
+from adele_runner.stages.judging import (
+    build_failed_judge_output,
+    build_judge_output,
+    build_judge_request,
+)
+from adele_runner.utils.io import append_jsonl, ensure_run_dir, latest_jsonl_by_key
 from adele_runner.utils.retry import is_retryable
 
 logger = logging.getLogger(__name__)
@@ -76,6 +80,19 @@ async def _run_request_response_judges(
             if key in done:
                 continue
             ground_truth = ground_truths.get(inference_output.instance_id, "")
+            if inference_output.response is None or inference_output.status != "success":
+                _, judge_prompt = build_judge_request(inference_output, ground_truth, target)
+                output = build_failed_judge_output(
+                    inference_output,
+                    target,
+                    judge_prompt,
+                    status="skipped",
+                    error_message="Inference unavailable.",
+                    run_id=config.run.run_id,
+                )
+                append_jsonl(judge_path, output)
+                outputs.append(output)
+                continue
             request, judge_prompt = build_judge_request(inference_output, ground_truth, target)
             requests.append(request)
             request_meta[request.request_id] = (target, inference_output, judge_prompt)
@@ -94,6 +111,22 @@ async def _run_request_response_judges(
             _budget_tracker: BudgetTracker | None = budget_tracker,
         ) -> None:
             if isinstance(response, BaseException):
+                request_id = getattr(response, "request_id", None)
+                meta = _request_meta.get(request_id) if request_id is not None else None
+                if meta is None:
+                    logger.error("Judge request failed without mappable request_id: %s", response)
+                    return
+                resolved_target, inference_output, judge_prompt = meta
+                output = build_failed_judge_output(
+                    inference_output,
+                    resolved_target,
+                    judge_prompt,
+                    status="request_failed",
+                    error_message=str(response),
+                    run_id=config.run.run_id,
+                )
+                append_jsonl(judge_path, output)
+                outputs.append(output)
                 return
             meta = _request_meta.get(response.request_id)
             if meta is None:
@@ -157,12 +190,25 @@ async def _run_batch_judges(
         request_meta: dict[str, tuple[InferenceOutput, str]] = {}
         for inference_output in inference_outputs:
             ground_truth = ground_truths.get(inference_output.instance_id, "")
-            request, judge_prompt = build_judge_request(inference_output, ground_truth, target)
-            all_requests[request.request_id] = request
-            request_meta[request.request_id] = (inference_output, judge_prompt)
             key = (inference_output.instance_id, inference_output.model_id, target.judge_name)
             if key in done:
                 continue
+            if inference_output.response is None or inference_output.status != "success":
+                _, judge_prompt = build_judge_request(inference_output, ground_truth, target)
+                output = build_failed_judge_output(
+                    inference_output,
+                    target,
+                    judge_prompt,
+                    status="skipped",
+                    error_message="Inference unavailable.",
+                    run_id=config.run.run_id,
+                )
+                append_jsonl(judge_path, output)
+                all_outputs.append(output)
+                continue
+            request, judge_prompt = build_judge_request(inference_output, ground_truth, target)
+            all_requests[request.request_id] = request
+            request_meta[request.request_id] = (inference_output, judge_prompt)
             pending_request_ids.add(request.request_id)
             pending_request_order.append(request.request_id)
 
@@ -387,7 +433,8 @@ async def run_judge(
     ensure_run_dir(run_dir)
     judge_path = config.judge_outputs_path()
 
-    done = build_dedup_index(judge_path, "instance_id", "model_id", "judge_name")
+    latest_judges = latest_jsonl_by_key(judge_path, JudgeOutput, "instance_id", "model_id", "judge_name")
+    done = {key for key, output in latest_judges.items() if output.status == "success"}
     logger.info("Judge dedup index: %d entries.", len(done))
 
     plans = resolve_judge_plans(config)

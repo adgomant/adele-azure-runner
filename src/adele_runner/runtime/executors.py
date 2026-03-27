@@ -154,6 +154,10 @@ class RequestResponseExecutor:
                             stop_dispatch.set()
                             return
                 except Exception as exc:  # noqa: BLE001
+                    try:
+                        setattr(exc, "request_id", request.request_id)
+                    except Exception:  # noqa: BLE001
+                        pass
                     results[idx] = exc
                     if on_result is not None:
                         try:

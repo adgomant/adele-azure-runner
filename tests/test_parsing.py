@@ -20,10 +20,11 @@ def test_parse_json_with_preamble():
 
 
 def test_parse_regex_fallback():
-    raw = 'score: 3, verdict: "partial", reason: "Partially correct"'
+    raw = '{"score": 3, "verdict": "partial", "reason": "Partially correct"} trailing'
     result = parse_judge_json(raw)
-    assert 1 <= result["score"] <= 5
-    assert result["verdict"] in {"correct", "incorrect", "partial", "unknown"}
+    assert result["score"] == 3
+    assert result["verdict"] == "partial"
+    assert result["status"] == "success"
 
 
 def test_parse_invalid_verdict_coerced():
@@ -36,3 +37,10 @@ def test_parse_score_clamped():
     raw = '{"score": 5, "verdict": "correct", "reason": "Perfect."}'
     result = parse_judge_json(raw)
     assert result["score"] == 5
+
+
+def test_parse_invalid_json_returns_none_score():
+    raw = 'score: 3, verdict: "partial", reason: "Partially correct"'
+    result = parse_judge_json(raw)
+    assert result["score"] is None
+    assert result["status"] == "parse_failed"

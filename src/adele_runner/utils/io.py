@@ -80,6 +80,15 @@ def build_dedup_index(path: Path, *key_fields: str) -> set[tuple]:
     return seen
 
 
+def latest_jsonl_by_key(path: Path, model: type[M], *key_fields: str) -> dict[tuple, M]:
+    """Return the latest valid JSONL record per composite key."""
+    latest: dict[tuple, M] = {}
+    for record in iter_jsonl(path, model):
+        key = tuple(getattr(record, field) for field in key_fields)
+        latest[key] = record
+    return latest
+
+
 # ---------------------------------------------------------------------------
 # Parquet helpers
 # ---------------------------------------------------------------------------

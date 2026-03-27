@@ -5,12 +5,22 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from adele_runner.runtime.types import ChatMessage, ChatRequest, ChatResponse, ResolvedJudgeTarget
 from adele_runner.schemas import InferenceOutput, JudgeOutput
 
 logger = logging.getLogger(__name__)
+
+JudgeStatus = Literal["success", "parse_failed", "request_failed", "skipped"]
+
+
+class ParsedJudgeResult(TypedDict):
+    score: int | None
+    verdict: Literal["correct", "incorrect", "partial", "unknown"] | None
+    reason: str | None
+    status: JudgeStatus
+    error_message: str | None
 
 _JUDGE_PROMPT_V2 = """\
 TASK:
@@ -79,7 +89,7 @@ def build_judge_prompt(
     raise ValueError(f"Unknown judge prompt template: {template}")
 
 
-def parse_judge_json(raw: str) -> dict[str, Any]:
+def parse_judge_json(raw: str) -> ParsedJudgeResult:
     """Parse judge JSON output with repair fallback."""
     try:
         obj = json.loads(raw.strip())
@@ -99,17 +109,32 @@ def parse_judge_json(raw: str) -> dict[str, Any]:
     verdict_match = re.search(r'"verdict"\s*:\s*"(\w+)"', raw)
     reason_match = re.search(r'"reason"\s*:\s*"([^"]*)"', raw)
 
-    score = int(score_match.group(1)) if score_match else 1
-    verdict = verdict_match.group(1) if verdict_match else "unknown"
-    if verdict not in _VALID_VERDICTS:
-        verdict = "unknown"
-    reason = reason_match.group(1) if reason_match else "Could not parse reason."
+    if score_match:
+        score = max(1, min(5, int(score_match.group(1))))
+        verdict = verdict_match.group(1) if verdict_match else "unknown"
+        if verdict not in _VALID_VERDICTS:
+            verdict = "unknown"
+        reason = reason_match.group(1) if reason_match else "Recovered score from regex fallback."
+        logger.warning("Used regex fallback for judge output: score=%d verdict=%s", score, verdict)
+        return {
+            "score": score,
+            "verdict": verdict,
+            "reason": reason,
+            "status": "success",
+            "error_message": None,
+        }
 
-    logger.warning("Used regex fallback for judge output: score=%d verdict=%s", score, verdict)
-    return {"score": max(1, min(5, score)), "verdict": verdict, "reason": reason}
+    logger.warning("Could not parse judge JSON output: %r", raw[:200])
+    return {
+        "score": None,
+        "verdict": None,
+        "reason": None,
+        "status": "parse_failed",
+        "error_message": "Could not parse judge JSON output.",
+    }
 
 
-def _validate_judge_obj(obj: dict[str, Any]) -> dict[str, Any]:
+def _validate_judge_obj(obj: dict[str, Any]) -> ParsedJudgeResult:
     score = int(obj["score"])
     if not (1 <= score <= 5):
         raise ValueError(f"Score out of range: {score}")
@@ -117,10 +142,16 @@ def _validate_judge_obj(obj: dict[str, Any]) -> dict[str, Any]:
     if verdict not in _VALID_VERDICTS:
         verdict = "unknown"
     reason = str(obj.get("reason", ""))
-    return {"score": score, "verdict": verdict, "reason": reason}
+    return {
+        "score": score,
+        "verdict": verdict,
+        "reason": reason,
+        "status": "success",
+        "error_message": None,
+    }
 
 
-def parse_judge_v2(raw: str) -> dict[str, Any]:
+def parse_judge_v2(raw: str) -> ParsedJudgeResult:
     """Parse v2 judge output: expects a bare integer score 1-5."""
     stripped = raw.strip()
     try:
@@ -130,6 +161,8 @@ def parse_judge_v2(raw: str) -> dict[str, Any]:
             "score": score,
             "verdict": "unknown",
             "reason": "Scored via v2 bare-integer prompt",
+            "status": "success",
+            "error_message": None,
         }
     except ValueError:
         pass
@@ -141,13 +174,17 @@ def parse_judge_v2(raw: str) -> dict[str, Any]:
             "score": score,
             "verdict": "unknown",
             "reason": "Scored via v2 bare-integer prompt",
+            "status": "success",
+            "error_message": None,
         }
 
-    logger.warning("Could not parse v2 judge output, defaulting to score=1: %r", raw[:200])
+    logger.warning("Could not parse v2 judge output: %r", raw[:200])
     return {
-        "score": 1,
-        "verdict": "unknown",
-        "reason": "Scored via v2 bare-integer prompt",
+        "score": None,
+        "verdict": None,
+        "reason": None,
+        "status": "parse_failed",
+        "error_message": "Could not parse v2 bare-integer judge output.",
     }
 
 
@@ -193,11 +230,13 @@ def build_judge_output(
             instance_id=inference_output.instance_id,
             model_id=inference_output.model_id,
             judge_name=target.judge_name,
-            score=1,
-            verdict="unknown",
-            reason=f"Judge request failed in anthropic batch with result_type={batch_result_type}",
+            score=None,
+            verdict=None,
+            reason=None,
             raw_output=str(response.raw_output or response.content),
             judge_prompt=judge_prompt,
+            status="request_failed",
+            error_message=f"Judge request failed in anthropic batch with result_type={batch_result_type}",
             tokens_prompt=response.prompt_tokens,
             tokens_completion=response.completion_tokens,
             run_id=run_id,
@@ -217,7 +256,35 @@ def build_judge_output(
         reason=parsed["reason"],
         raw_output=str(response.raw_output or response.content),
         judge_prompt=judge_prompt,
+        status=parsed["status"],
+        error_message=parsed["error_message"],
         tokens_prompt=response.prompt_tokens,
         tokens_completion=response.completion_tokens,
+        run_id=run_id,
+    )
+
+
+def build_failed_judge_output(
+    inference_output: InferenceOutput,
+    target: ResolvedJudgeTarget,
+    judge_prompt: str,
+    *,
+    status: JudgeStatus,
+    error_message: str,
+    run_id: str,
+    raw_output: str | None = None,
+) -> JudgeOutput:
+    """Persist a judge failure or skip as an explicit output row."""
+    return JudgeOutput(
+        instance_id=inference_output.instance_id,
+        model_id=inference_output.model_id,
+        judge_name=target.judge_name,
+        score=None,
+        verdict=None,
+        reason=None,
+        raw_output=raw_output,
+        judge_prompt=judge_prompt,
+        status=status,
+        error_message=error_message,
         run_id=run_id,
     )

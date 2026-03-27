@@ -7,7 +7,7 @@ from pathlib import Path
 
 from adele_runner.config import AppConfig
 from adele_runner.schemas import InferenceOutput, JudgeOutput
-from adele_runner.utils.io import iter_jsonl, write_parquet
+from adele_runner.utils.io import latest_jsonl_by_key, write_parquet
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +18,11 @@ def merge_results(config: AppConfig) -> Path:
     judge_path = config.judge_outputs_path()
     merged_path = config.merged_path()
 
-    inf_records = list(iter_jsonl(outputs_path, InferenceOutput))
-    judge_records = list(iter_jsonl(judge_path, JudgeOutput))
+    inf_records = list(latest_jsonl_by_key(outputs_path, InferenceOutput, "instance_id", "model_id").values())
+    judge_records = list(
+        latest_jsonl_by_key(judge_path, JudgeOutput, "instance_id", "model_id", "judge_name").values()
+    )
+    expected_judges = [judge.name for judge in config.judging.judges] if config.judging.enabled else []
 
     logger.info(
         "Merging %d inference outputs + %d judge outputs.",
@@ -50,13 +53,28 @@ def merge_results(config: AppConfig) -> Path:
         }
         judges = judge_map.get(key, {})
         judge_scores: list[int] = []
+        for judge_name in expected_judges:
+            jr = judges.get(judge_name)
+            row[f"judge_{judge_name}_score"] = jr.score if jr else None
+            row[f"judge_{judge_name}_verdict"] = jr.verdict if jr else None
+            row[f"judge_{judge_name}_reason"] = jr.reason if jr else None
+            row[f"judge_{judge_name}_status"] = jr.status if jr else None
+            row[f"judge_{judge_name}_error_message"] = jr.error_message if jr else None
+            if jr is not None and jr.score is not None:
+                judge_scores.append(jr.score)
         for judge_name, jr in judges.items():
+            if judge_name in expected_judges:
+                continue
             row[f"judge_{judge_name}_score"] = jr.score
             row[f"judge_{judge_name}_verdict"] = jr.verdict
             row[f"judge_{judge_name}_reason"] = jr.reason
-            judge_scores.append(jr.score)
+            row[f"judge_{judge_name}_status"] = jr.status
+            row[f"judge_{judge_name}_error_message"] = jr.error_message
 
-        if judge_scores:
+        has_all_expected_scores = bool(expected_judges) and all(
+            judges.get(judge_name) is not None and judges[judge_name].score is not None for judge_name in expected_judges
+        )
+        if has_all_expected_scores:
             avg = sum(judge_scores) / len(judge_scores)
             row["avg_judge_score"] = round(avg, 3)
             row["verification_score"] = 1 if avg >= 3 else 0

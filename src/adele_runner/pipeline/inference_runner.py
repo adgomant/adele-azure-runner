@@ -24,8 +24,12 @@ from adele_runner.runtime.executors import (
 from adele_runner.runtime.resolution import resolve_inference_plan
 from adele_runner.runtime.types import ChatResponse
 from adele_runner.schemas import DatasetItem, InferenceOutput, RunManifest
-from adele_runner.stages.inference import build_inference_output, build_inference_request
-from adele_runner.utils.io import append_jsonl, build_dedup_index, ensure_run_dir
+from adele_runner.stages.inference import (
+    build_failed_inference_output,
+    build_inference_output,
+    build_inference_request,
+)
+from adele_runner.utils.io import append_jsonl, ensure_run_dir, latest_jsonl_by_key
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +70,8 @@ async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[Inf
         encoding="utf-8",
     )
 
-    done = build_dedup_index(outputs_path, "instance_id", "model_id")
+    latest_outputs = latest_jsonl_by_key(outputs_path, InferenceOutput, "instance_id", "model_id")
+    done = {key for key, output in latest_outputs.items() if output.status == "success"}
     logger.info("Dedup index loaded: %d already completed.", len(done))
 
     pending = [item for item in items if (item.instance_id, target.model) not in done]
@@ -83,6 +88,14 @@ async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[Inf
 
     def _record_response(response: ChatResponse | BaseException) -> None:
         if isinstance(response, BaseException):
+            request_id = getattr(response, "request_id", None)
+            item = item_by_id.get(request_id) if request_id is not None else None
+            if item is None:
+                logger.error("Inference task failed without mappable request_id: %s", response)
+                return
+            output = build_failed_inference_output(item, target, str(response), config.run.run_id)
+            append_jsonl(outputs_path, output)
+            completed.append(output)
             return
         item = item_by_id.get(response.request_id)
         if item is None:

@@ -10,7 +10,7 @@ from typing import Any
 
 from adele_runner.config import AppConfig
 from adele_runner.schemas import InferenceOutput, JudgeOutput
-from adele_runner.utils.io import iter_jsonl
+from adele_runner.utils.io import latest_jsonl_by_key
 from adele_runner.utils.pricing import estimate_cost_usd
 
 logger = logging.getLogger(__name__)
@@ -44,25 +44,52 @@ def _cohen_kappa(labels_a: list[int], labels_b: list[int]) -> float:
 
 
 def compute_verification_scores(
+    inference_records: list[InferenceOutput],
     judge_records: list[JudgeOutput],
-) -> dict[tuple[str, str], float]:
-    """Return avg judge score per (instance_id, model_id)."""
-    score_lists: dict[tuple[str, str], list[int]] = {}
+    expected_judges: list[str],
+) -> dict[tuple[str, str], float | None]:
+    """Return avg judge score per (instance_id, model_id), or None when incomplete."""
+    judge_map: dict[tuple[str, str], dict[str, JudgeOutput]] = {}
     for jr in judge_records:
-        key = (jr.instance_id, jr.model_id)
-        score_lists.setdefault(key, []).append(jr.score)
-    return {k: sum(v) / len(v) for k, v in score_lists.items()}
+        judge_map.setdefault((jr.instance_id, jr.model_id), {})[jr.judge_name] = jr
+
+    verification_scores: dict[tuple[str, str], float | None] = {}
+    for inf in inference_records:
+        key = (inf.instance_id, inf.model_id)
+        if inf.status != "success" or inf.response is None:
+            verification_scores[key] = None
+            continue
+        judges = judge_map.get(key, {})
+        if not expected_judges:
+            verification_scores[key] = None
+            continue
+        scores: list[int] = []
+        for judge_name in expected_judges:
+            jr = judges.get(judge_name)
+            if jr is None or jr.score is None:
+                verification_scores[key] = None
+                break
+            scores.append(jr.score)
+        else:
+            verification_scores[key] = sum(scores) / len(scores)
+    return verification_scores
 
 
 def summarize(config: AppConfig) -> dict[str, Any]:
     """Compute and print a metrics summary, then export to JSON."""
     judge_path = config.judge_outputs_path()
 
-    judge_records = list(iter_jsonl(judge_path, JudgeOutput))
-    if not judge_records:
-        logger.warning("No judge outputs found at %s", judge_path)
+    inference_records = list(
+        latest_jsonl_by_key(config.outputs_path(), InferenceOutput, "instance_id", "model_id").values()
+    )
+    judge_records = list(
+        latest_jsonl_by_key(judge_path, JudgeOutput, "instance_id", "model_id", "judge_name").values()
+    )
+    if not inference_records and not judge_records:
+        logger.warning("No inference or judge outputs found at %s", config.run_dir())
         return {}
 
+    expected_judges = [judge.name for judge in config.judging.judges] if config.judging.enabled else []
     judge_names = sorted({jr.judge_name for jr in judge_records})
     logger.info("Judges found: %s", judge_names)
 
@@ -70,22 +97,27 @@ def summarize(config: AppConfig) -> dict[str, Any]:
     per_judge: dict[str, dict[str, Any]] = {}
     for name in judge_names:
         records = [jr for jr in judge_records if jr.judge_name == name]
-        scores = [jr.score for jr in records]
+        scores = [jr.score for jr in records if jr.score is not None]
         per_judge[name] = {
             "n": len(records),
-            "mean_score": round(sum(scores) / len(scores), 3) if scores else 0,
+            "n_scored": len(scores),
+            "n_incomplete": len(records) - len(scores),
+            "mean_score": round(sum(scores) / len(scores), 3) if scores else None,
             "score_dist": dict(sorted(Counter(scores).items())),
         }
 
     # Verification scores (avg across all judges per instance)
-    avg_scores = compute_verification_scores(judge_records)
-    verification_binary = [1 if avg >= 3 else 0 for avg in avg_scores.values()]
+    avg_scores = compute_verification_scores(inference_records, judge_records, expected_judges)
+    verifiable_scores = [avg for avg in avg_scores.values() if avg is not None]
+    verification_binary = [1 if avg >= 3 else 0 for avg in verifiable_scores]
     verification: dict[str, Any] = {
         "n_instances": len(avg_scores),
-        "mean_avg_score": round(sum(avg_scores.values()) / len(avg_scores), 3) if avg_scores else 0,
+        "n_verifiable": len(verifiable_scores),
+        "n_incomplete": len(avg_scores) - len(verifiable_scores),
+        "mean_avg_score": round(sum(verifiable_scores) / len(verifiable_scores), 3) if verifiable_scores else None,
         "verification_success_rate": round(sum(verification_binary) / len(verification_binary), 3)
         if verification_binary
-        else 0,
+        else None,
         "verification_score_dist": dict(sorted(Counter(verification_binary).items())),
     }
 
@@ -95,6 +127,8 @@ def summarize(config: AppConfig) -> dict[str, Any]:
         # Build per-judge score index: judge_name -> {(instance_id, model_id): score}
         judge_score_map: dict[str, dict[tuple[str, str], int]] = {}
         for jr in judge_records:
+            if jr.score is None:
+                continue
             judge_score_map.setdefault(jr.judge_name, {})[(jr.instance_id, jr.model_id)] = jr.score
 
         for name_a, name_b in combinations(judge_names, 2):
@@ -111,7 +145,6 @@ def summarize(config: AppConfig) -> dict[str, Any]:
 
     # ----- Token usage -----
     token_usage: dict[str, dict[str, int]] = {}
-    inference_records = list(iter_jsonl(config.outputs_path(), InferenceOutput))
     for rec in inference_records:
         entry = token_usage.setdefault(
             rec.model_id, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -157,11 +190,14 @@ def summarize(config: AppConfig) -> dict[str, Any]:
     print("\n=== Metrics Summary ===")
     for name, stats in per_judge.items():
         print(f"\nJudge: {name}")
-        print(f"  N={stats['n']}  mean_score={stats['mean_score']}")
+        print(f"  N={stats['n']}  scored={stats['n_scored']}  incomplete={stats['n_incomplete']}")
+        print(f"  mean_score={stats['mean_score']}")
         print(f"  Score distribution: {stats['score_dist']}")
 
     print("\n--- Verification (avg score >= 3 → sucess) ---")
     print(f"  Instances evaluated: {verification['n_instances']}")
+    print(f"  Verifiable: {verification['n_verifiable']}")
+    print(f"  Incomplete: {verification['n_incomplete']}")
     print(f"  Mean avg score: {verification['mean_avg_score']}")
     print(f"  Verification sucess rate: {verification['verification_success_rate']}")
     print(f"  Distribution: {verification['verification_score_dist']}")

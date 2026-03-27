@@ -36,9 +36,28 @@ def build_inference_output(
         model_id=target.model,
         prompt=item.prompt,
         response=response.content,
+        status="success",
         tokens_prompt=response.prompt_tokens,
         tokens_completion=response.completion_tokens,
         latency_s=response.latency_s,
         finish_reason=response.finish_reason,
+        run_id=run_id,
+    )
+
+
+def build_failed_inference_output(
+    item: DatasetItem,
+    target: ResolvedInferenceTarget,
+    error_message: str,
+    run_id: str,
+) -> InferenceOutput:
+    """Persist a failed inference attempt as an explicit output row."""
+    return InferenceOutput(
+        instance_id=item.instance_id,
+        model_id=target.model,
+        prompt=item.prompt,
+        response=None,
+        status="failed",
+        error_message=error_message,
         run_id=run_id,
     )

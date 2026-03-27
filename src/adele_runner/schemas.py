@@ -14,7 +14,9 @@ class InferenceOutput(BaseModel):
     instance_id: str
     model_id: str
     prompt: str
-    response: str
+    response: str | None
+    status: Literal["success", "failed"] = "success"
+    error_message: str | None = None
     tokens_prompt: int | None = None
     tokens_completion: int | None = None
     latency_s: float | None = None
@@ -29,11 +31,13 @@ class JudgeOutput(BaseModel):
     instance_id: str
     model_id: str
     judge_name: str
-    score: int = Field(ge=1, le=5)
-    verdict: Literal["correct", "incorrect", "partial", "unknown"]
-    reason: str
-    raw_output: str
+    score: int | None = Field(default=None, ge=1, le=5)
+    verdict: Literal["correct", "incorrect", "partial", "unknown"] | None
+    reason: str | None
+    raw_output: str | None
     judge_prompt: str
+    status: Literal["success", "parse_failed", "request_failed", "skipped"] = "success"
+    error_message: str | None = None
     tokens_prompt: int | None = None
     tokens_completion: int | None = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)

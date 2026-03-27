@@ -44,6 +44,34 @@ def test_judge_output_valid():
     assert j.verdict == "correct"
 
 
+def test_failed_inference_output_valid():
+    out = InferenceOutput(
+        instance_id="abc",
+        model_id="gpt-4o",
+        prompt="Hello",
+        response=None,
+        status="failed",
+        error_message="timeout",
+    )
+    assert out.status == "failed"
+
+
+def test_judge_output_none_score_valid():
+    j = JudgeOutput(
+        instance_id="abc",
+        model_id="gpt-4o",
+        judge_name="judge1",
+        score=None,
+        verdict=None,
+        reason=None,
+        raw_output=None,
+        judge_prompt="Evaluate...",
+        status="request_failed",
+        error_message="timeout",
+    )
+    assert j.score is None
+
+
 def test_judge_output_invalid_score():
     with pytest.raises(ValidationError):
         JudgeOutput(
