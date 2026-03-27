@@ -10,6 +10,8 @@ Both `outputs.jsonl` (inference) and `judge_outputs.jsonl` (judging) are append-
 - Interrupting a run (Ctrl+C, crash, timeout) loses at most one in-flight instance
 - The files grow monotonically and are never rewritten
 
+For batch judging, the runner also persists `batch_jobs.jsonl`, which tracks remote batch chunk IDs and their latest known status so the next `run-judge` can recover already-submitted work without re-submitting it.
+
 ## Dedup Index
 
 At the start of every run, the runner builds a **dedup index** by scanning the existing output file:
@@ -47,6 +49,18 @@ Key: `(instance_id, model_id, judge_name)`
 | Add a new judge | Processes all instances for the new judge (different judge_name) |
 | Resume after crash | Picks up where it left off, skipping completed instances |
 | Re-run after completion | Skips everything (all instances already done) |
+
+### Batch judge resume
+
+For batch-mode judges, resume now has an extra step before re-submitting work:
+
+1. load `batch_jobs.jsonl`
+2. find remote batch jobs for this run whose results were not fully downloaded
+3. refresh their provider status
+4. if a remote batch already completed, download and materialize its results into `judge_outputs.jsonl`
+5. only submit new chunks for requests that are neither already written nor already tied to a live remote batch
+
+This prevents re-paying for batches that finished remotely after a local crash or network interruption.
 
 ## Ground Truth Caching
 

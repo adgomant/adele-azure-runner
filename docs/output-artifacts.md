@@ -8,6 +8,7 @@ All outputs are written to `runs/<run_id>/`. The default run directory is `runs/
 runs/<run_id>/
   outputs.jsonl            ← Inference results (append-only)
   judge_outputs.jsonl      ← Judge evaluations (append-only)
+  batch_jobs.jsonl         ← Persisted batch chunk submissions (append-only)
   merged_results.parquet   ← Combined view (regenerated)
   run_manifest.json        ← Run provenance (updated in-place)
   metrics.json             ← Summary statistics (regenerated)
@@ -53,6 +54,26 @@ One JSON object per line. Each line is a `JudgeOutput` record.
 | `judge_prompt` | `str` | Full prompt sent to the judge |
 | `timestamp` | `datetime` | When the evaluation was recorded (UTC) |
 | `run_id` | `str` | Run identifier |
+
+## `batch_jobs.jsonl`
+
+One JSON object per line. Each line is the latest known snapshot of a batch chunk submission.
+
+| Field | Type | Description |
+|---|---|---|
+| `run_id` | `str` | Run identifier |
+| `stage` | `str` | Batch stage (`"judging"` or `"inference"`) |
+| `provider` | `str` | Batch provider |
+| `judge_name` | `str \| null` | Judge name for judge batches |
+| `chunk_id` | `str` | Deterministic chunk identifier |
+| `remote_batch_id` | `str` | Provider batch/job identifier |
+| `request_ids` | `list[str]` | Original normalized request IDs in this chunk |
+| `request_count` | `int` | Number of requests in the chunk |
+| `last_known_status` | `str \| null` | Latest provider status seen on disk |
+| `results_downloaded_at` | `datetime \| null` | When results were fully materialized into JSONL |
+| `terminal_error` | `str \| null` | Terminal local/provider failure reason, if any |
+
+`run-judge` uses this file to resume remote batch jobs that were already submitted but whose results were not yet written to `judge_outputs.jsonl`.
 
 ## `merged_results.parquet`
 

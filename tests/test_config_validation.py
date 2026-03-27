@@ -96,18 +96,18 @@ def test_batch_limits_default_values():
     assert cfg.providers.azure_openai.max_bytes_per_file == 200_000_000
 
 
-def test_anthropic_batch_limits_reject_excess_queue_budget():
+def test_anthropic_batch_limits_allow_custom_queue_budget():
     cfg = _cfg(
         inference={
             "provider": "anthropic",
             "mode": "batch",
             "model": "claude-sonnet-4-5",
-            "rate_limits": {"batch_queue_requests": 100_001},
+            "rate_limits": {"batch_queue_requests": 300_000},
         },
         judging={"enabled": False},
     )
     errors = cfg.validate_config()
-    assert any("batch_queue_requests" in error for error in errors)
+    assert not any("batch_queue_requests" in error for error in errors)
 
 
 def test_budget_requires_pricing_enabled():

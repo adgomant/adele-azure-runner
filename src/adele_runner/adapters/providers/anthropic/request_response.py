@@ -59,15 +59,20 @@ class AnthropicRequestResponseAdapter:
                 create_fn = raw_messages.create
                 parse_response = True
 
+            request_kwargs: dict[str, Any] = {
+                "model": request.model,
+                "system": "\n\n".join(system_parts) or None,
+                "messages": message_payload,
+                "max_tokens": request.max_tokens or 1024,
+                "temperature": request.temperature,
+            }
+            if request.top_p is not None and "temperature" not in request_kwargs:
+                request_kwargs["top_p"] = request.top_p
+
             response = await asyncio.wait_for(
                 asyncio.to_thread(
                     create_fn,
-                    model=request.model,
-                    system="\n\n".join(system_parts) or None,
-                    messages=message_payload,
-                    max_tokens=request.max_tokens or 1024,
-                    temperature=request.temperature,
-                    top_p=request.top_p,
+                    **request_kwargs,
                 ),
                 timeout=timeout_s,
             )

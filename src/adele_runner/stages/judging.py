@@ -187,6 +187,22 @@ def build_judge_output(
     run_id: str,
 ) -> JudgeOutput:
     """Convert a normalized judge response into the public judge schema."""
+    batch_result_type = response.metadata.get("anthropic_batch_result_type")
+    if batch_result_type is not None and batch_result_type != "succeeded":
+        return JudgeOutput(
+            instance_id=inference_output.instance_id,
+            model_id=inference_output.model_id,
+            judge_name=target.judge_name,
+            score=1,
+            verdict="unknown",
+            reason=f"Judge request failed in anthropic batch with result_type={batch_result_type}",
+            raw_output=str(response.raw_output or response.content),
+            judge_prompt=judge_prompt,
+            tokens_prompt=response.prompt_tokens,
+            tokens_completion=response.completion_tokens,
+            run_id=run_id,
+        )
+
     parsed = (
         parse_judge_v2(response.content)
         if target.prompt_template == "v2"
@@ -199,10 +215,9 @@ def build_judge_output(
         score=parsed["score"],
         verdict=parsed["verdict"],
         reason=parsed["reason"],
-        raw_output=response.content,
+        raw_output=str(response.raw_output or response.content),
         judge_prompt=judge_prompt,
         tokens_prompt=response.prompt_tokens,
         tokens_completion=response.completion_tokens,
         run_id=run_id,
     )
-

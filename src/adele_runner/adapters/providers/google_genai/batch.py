@@ -6,10 +6,12 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from adele_runner.config import AppConfig
+from adele_runner.runtime.batch_jobs import BatchJobRecord, BatchStage, make_chunk_id
 from adele_runner.runtime.types import (
     AdapterCapabilities,
     ChatRequest,
@@ -27,6 +29,7 @@ class GoogleGenAIBatchAdapter:
     """Use the Gemini Batch API via google-genai."""
 
     capabilities = AdapterCapabilities(request_response=False, batch=True)
+    poll_interval_s = _POLL_INTERVAL_S
 
     def __init__(
         self,
@@ -59,17 +62,9 @@ class GoogleGenAIBatchAdapter:
         settings: ExecutionSettings,
         on_chunk_completed: Callable[[list[ChatResponse]], None] | None = None,
     ) -> list[ChatResponse]:
-        _ = run_dir
-        batch_budget = settings.batch_budget
-        chunks = split_items_by_limits(
-            requests,
-            size_getter=self._estimate_request_bytes,
-            token_getter=self._estimate_request_tokens,
-            max_items=batch_budget.batch_queue_requests if batch_budget else None,
-            max_bytes=batch_budget.max_bytes_per_batch if batch_budget else None,
-            max_tokens=batch_budget.batch_enqueued_tokens if batch_budget else None,
-        )
+        chunks = self.split_requests(requests, settings)
         outputs: list[ChatResponse] = []
+        batch_budget = settings.batch_budget
         submit_interval_s = 0.0
         if batch_budget is not None and batch_budget.batch_requests_per_minute:
             submit_interval_s = 60.0 / batch_budget.batch_requests_per_minute
@@ -84,26 +79,113 @@ class GoogleGenAIBatchAdapter:
                     time.sleep(submit_interval_s - elapsed)
             last_submit_at = time.monotonic()
 
-            job = self._create_batch_job(chunk)
-            poll_start = time.monotonic()
-
-            while True:
-                state = self._status_name(job)
-                if state in {"SUCCEEDED", "COMPLETED"}:
-                    break
-                if state in {"FAILED", "CANCELLED", "EXPIRED"}:
-                    raise RuntimeError(f"Google batch job ended with status: {state}")
-                if time.monotonic() - poll_start > settings.max_poll_time_s:
-                    raise TimeoutError(f"Google batch polling exceeded {settings.max_poll_time_s}s.")
-                time.sleep(_POLL_INTERVAL_S)
-                job = self._refresh_batch_job(job)
-
-            chunk_outputs = self._extract_results(job, chunk)
+            submission = self.submit_chunk(
+                chunk,
+                run_dir,
+                settings,
+                stage="inference",
+                run_id=self._cfg.run.run_id,
+                chunk_id=make_chunk_id(
+                    stage="inference",
+                    provider="google_genai",
+                    request_ids=[request.request_id for request in chunk],
+                ),
+            )
+            submission = self._wait_for_completion(submission, settings)
+            chunk_outputs = self.fetch_results(submission, chunk, settings)
             if on_chunk_completed is not None:
                 on_chunk_completed(chunk_outputs)
             outputs.extend(chunk_outputs)
 
         return outputs
+
+    def split_requests(
+        self,
+        requests: list[ChatRequest],
+        settings: ExecutionSettings,
+    ) -> list[list[ChatRequest]]:
+        batch_budget = settings.batch_budget
+        return split_items_by_limits(
+            requests,
+            size_getter=self._estimate_request_bytes,
+            token_getter=self._estimate_request_tokens,
+            max_items=batch_budget.batch_queue_requests if batch_budget else None,
+            max_bytes=batch_budget.max_bytes_per_batch if batch_budget else None,
+            max_tokens=batch_budget.batch_enqueued_tokens if batch_budget else None,
+        )
+
+    def submit_chunk(
+        self,
+        requests: list[ChatRequest],
+        run_dir: Path,
+        settings: ExecutionSettings,
+        *,
+        stage: BatchStage,
+        run_id: str,
+        chunk_id: str,
+        judge_name: str | None = None,
+    ) -> BatchJobRecord:
+        _ = run_dir, settings
+        job = self._create_batch_job(requests)
+        status = self._status_name(job)
+        remote_batch_id = str(getattr(job, "name", None) or getattr(job, "id", ""))
+        now = datetime.utcnow()
+        return BatchJobRecord(
+            run_id=run_id,
+            stage=stage,
+            provider="google_genai",
+            judge_name=judge_name,
+            chunk_id=chunk_id,
+            remote_batch_id=remote_batch_id,
+            request_ids=[request.request_id for request in requests],
+            request_count=len(requests),
+            submitted_at=now,
+            last_known_status=status,
+            status_checked_at=now,
+            completed_at=now if self._is_terminal_status(status) else None,
+            provider_metadata={"job_name": remote_batch_id},
+            is_terminal=self._is_terminal_status(status),
+            is_successful=self._status_is_successful(status),
+            terminal_error=(
+                None
+                if self._status_is_successful(status) in {None, True}
+                else f"Google batch job ended with status={status}"
+            ),
+        )
+
+    def refresh_submission(
+        self,
+        submission: BatchJobRecord,
+        settings: ExecutionSettings,
+    ) -> BatchJobRecord:
+        _ = settings
+        job = self._client.batches.get(name=submission.remote_batch_id)
+        status = self._status_name(job)
+        now = datetime.utcnow()
+        return submission.model_copy(
+            update={
+                "last_known_status": status,
+                "status_checked_at": now,
+                "completed_at": now if self._is_terminal_status(status) else None,
+                "is_terminal": self._is_terminal_status(status),
+                "is_successful": self._status_is_successful(status),
+                "terminal_error": (
+                    None
+                    if self._status_is_successful(status) in {None, True}
+                    else f"Google batch job ended with status={status}"
+                ),
+            }
+        )
+
+    def fetch_results(
+        self,
+        submission: BatchJobRecord,
+        requests: list[ChatRequest],
+        settings: ExecutionSettings,
+    ) -> list[ChatResponse]:
+        _ = settings
+        job = self._client.batches.get(name=submission.remote_batch_id)
+        return self._extract_results(job, requests)
 
     def _estimate_request_tokens(self, request: ChatRequest) -> int:
         prompt_chars = sum(len(message.content) for message in request.messages)
@@ -186,8 +268,39 @@ class GoogleGenAIBatchAdapter:
                     or usage.get("prompt_token_count"),
                     completion_tokens=getattr(usage, "candidates_token_count", None)
                     or usage.get("candidates_token_count"),
-                    raw_output=text or "",
+                    raw_output=response,
                     metadata=dict(request.metadata) if request else {},
                 )
             )
         return outputs
+
+    def _wait_for_completion(
+        self,
+        submission: BatchJobRecord,
+        settings: ExecutionSettings,
+    ) -> BatchJobRecord:
+        poll_start = time.monotonic()
+        current = submission
+        while not current.is_terminal:
+            if time.monotonic() - poll_start > settings.max_poll_time_s:
+                raise TimeoutError(f"Google batch polling exceeded {settings.max_poll_time_s}s.")
+            time.sleep(self.poll_interval_s)
+            current = self.refresh_submission(current, settings)
+        if current.is_successful is False:
+            raise RuntimeError(f"Google batch job ended with status: {current.last_known_status}")
+        return current
+
+    @staticmethod
+    def _is_terminal_status(status: Any) -> bool:
+        return str(status) in {"SUCCEEDED", "COMPLETED", "FAILED", "CANCELLED", "EXPIRED"}
+
+    @staticmethod
+    def _is_success_status(status: Any) -> bool:
+        return str(status) in {"SUCCEEDED", "COMPLETED"}
+
+    @classmethod
+    def _status_is_successful(cls, status: Any) -> bool | None:
+        status_str = str(status)
+        if not status_str or status_str == "UNKNOWN":
+            return None
+        return cls._is_success_status(status)

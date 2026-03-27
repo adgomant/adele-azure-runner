@@ -6,9 +6,10 @@ import asyncio
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from adele_runner.config import RateLimitsConfig
+from adele_runner.runtime.batch_jobs import BatchJobRecord, BatchStage
 from adele_runner.runtime.types import ChatRequest, ChatResponse, ExecutionSettings
 from adele_runner.utils.concurrency import AsyncRateLimiter
 from adele_runner.utils.retry import make_retry_decorator
@@ -33,6 +34,44 @@ class BatchTransport(Protocol):
         run_dir: Path,
         settings: ExecutionSettings,
         on_chunk_completed: Callable[[list[ChatResponse]], None] | None = None,
+    ) -> list[ChatResponse]: ...
+
+
+@runtime_checkable
+class ResumableBatchTransport(Protocol):
+    """Batch transport with provider-specific submit/refresh/fetch primitives."""
+
+    poll_interval_s: float
+
+    def split_requests(
+        self,
+        requests: list[ChatRequest],
+        settings: ExecutionSettings,
+    ) -> list[list[ChatRequest]]: ...
+
+    def submit_chunk(
+        self,
+        requests: list[ChatRequest],
+        run_dir: Path,
+        settings: ExecutionSettings,
+        *,
+        stage: BatchStage,
+        run_id: str,
+        chunk_id: str,
+        judge_name: str | None = None,
+    ) -> BatchJobRecord: ...
+
+    def refresh_submission(
+        self,
+        submission: BatchJobRecord,
+        settings: ExecutionSettings,
+    ) -> BatchJobRecord: ...
+
+    def fetch_results(
+        self,
+        submission: BatchJobRecord,
+        requests: list[ChatRequest],
+        settings: ExecutionSettings,
     ) -> list[ChatResponse]: ...
 
 

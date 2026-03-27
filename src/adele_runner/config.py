@@ -451,13 +451,6 @@ class AppConfig(BaseModel):
                 errors.append(
                     f"{context}: anthropic batch_requests_per_minute exceeds Anthropic limit (50)."
                 )
-            if (
-                rate_limits.batch_queue_requests is not None
-                and rate_limits.batch_queue_requests > 100_000
-            ):
-                errors.append(
-                    f"{context}: anthropic batch_queue_requests exceeds Anthropic limit (100000)."
-                )
 
     def run_dir(self) -> Path:
         return Path(self.run.output_dir) / self.run.run_id
@@ -490,6 +483,9 @@ class AppConfig(BaseModel):
 
     def judge_outputs_path(self) -> Path:
         return self.run_dir() / "judge_outputs.jsonl"
+
+    def batch_jobs_path(self) -> Path:
+        return self.run_dir() / "batch_jobs.jsonl"
 
     def manifest_path(self) -> Path:
         return self.run_dir() / "run_manifest.json"

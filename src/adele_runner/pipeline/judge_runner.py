@@ -4,19 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import datetime
 
 from adele_runner.config import AppConfig
+from adele_runner.runtime.batch_jobs import (
+    BatchJobRecord,
+    append_batch_job_record,
+    latest_batch_job_records,
+    make_chunk_id,
+)
 from adele_runner.runtime.budgeting import BudgetTracker
 from adele_runner.runtime.executors import (
-    BatchExecutor,
     RequestResponseExecutor,
+    ResumableBatchTransport,
     create_rate_limiter,
 )
 from adele_runner.runtime.resolution import resolve_judge_plans
-from adele_runner.runtime.types import ChatResponse, ResolvedJudgePlan, ResolvedJudgeTarget
+from adele_runner.runtime.types import ChatRequest, ChatResponse, ExecutionSettings, ResolvedJudgePlan, ResolvedJudgeTarget
 from adele_runner.schemas import InferenceOutput, JudgeOutput
 from adele_runner.stages.judging import build_judge_output, build_judge_request
 from adele_runner.utils.io import append_jsonl, build_dedup_index, ensure_run_dir
+from adele_runner.utils.retry import is_retryable
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +138,7 @@ async def _run_batch_judges(
         return []
 
     all_outputs: list[JudgeOutput] = []
+    batch_jobs_path = config.batch_jobs_path()
 
     for plan in plans:
         target = plan.target
@@ -136,29 +146,42 @@ async def _run_batch_judges(
         settings = plan.settings
         budget_tracker = _build_judge_budget_tracker(config, target.judge_name)
         adapter = binding.create_adapter(config, budget_tracker=budget_tracker)
-        requests = []
-        request_meta: dict[str, tuple[InferenceOutput, str]] = {}
+        if not isinstance(adapter, ResumableBatchTransport):
+            raise TypeError(
+                f"Batch adapter for provider '{target.provider_kind}' does not support resume primitives."
+            )
 
+        all_requests: dict[str, ChatRequest] = {}
+        pending_request_ids: set[str] = set()
+        pending_request_order: list[str] = []
+        request_meta: dict[str, tuple[InferenceOutput, str]] = {}
         for inference_output in inference_outputs:
+            ground_truth = ground_truths.get(inference_output.instance_id, "")
+            request, judge_prompt = build_judge_request(inference_output, ground_truth, target)
+            all_requests[request.request_id] = request
+            request_meta[request.request_id] = (inference_output, judge_prompt)
             key = (inference_output.instance_id, inference_output.model_id, target.judge_name)
             if key in done:
                 continue
-            ground_truth = ground_truths.get(inference_output.instance_id, "")
-            request, judge_prompt = build_judge_request(inference_output, ground_truth, target)
-            requests.append(request)
-            request_meta[request.request_id] = (inference_output, judge_prompt)
+            pending_request_ids.add(request.request_id)
+            pending_request_order.append(request.request_id)
 
-        if not requests:
+        if not pending_request_order:
             logger.info("Batch judge [%s]: nothing pending.", target.judge_name)
             continue
 
-        logger.info("Batch judge [%s]: %d tasks pending.", target.judge_name, len(requests))
+        logger.info(
+            "Batch judge [%s]: %d tasks pending.",
+            target.judge_name,
+            len(pending_request_order),
+        )
 
         def _record_response(
             response: ChatResponse | BaseException,
             _request_meta: dict[str, tuple[InferenceOutput, str]] = request_meta,
             _target: ResolvedJudgeTarget = target,
             _budget_tracker: BudgetTracker | None = budget_tracker,
+            _pending_request_ids: set[str] = pending_request_ids,
         ) -> None:
             if isinstance(response, BaseException):
                 return
@@ -171,6 +194,9 @@ async def _run_batch_judges(
                 )
                 return
             inference_output, judge_prompt = meta
+            key = (inference_output.instance_id, inference_output.model_id, _target.judge_name)
+            if key in done:
+                return
             output = build_judge_output(
                 inference_output,
                 _target,
@@ -179,22 +205,172 @@ async def _run_batch_judges(
                 config.run.run_id,
             )
             append_jsonl(judge_path, output)
+            done.add(key)
             all_outputs.append(output)
+            _pending_request_ids.discard(response.request_id)
             if _budget_tracker is not None:
                 _budget_tracker.record_actual_usage(
                     prompt_tokens=output.tokens_prompt,
                     completion_tokens=output.tokens_completion,
                 )
 
-        await BatchExecutor().execute(
-            adapter=adapter,
-            requests=requests,
-            run_dir=run_dir,
-            settings=settings,
-            on_result=_record_response,
+        existing_jobs = sorted(
+            [
+                record
+                for record in latest_batch_job_records(
+                    batch_jobs_path,
+                    run_id=config.run.run_id,
+                    stage="judging",
+                    provider=target.provider_kind,
+                    judge_name=target.judge_name,
+                )
+                if record.needs_recovery
+            ],
+            key=lambda record: record.submitted_at or datetime.min,
         )
+        logger.info("Recovered %d pending batch jobs from disk", len(existing_jobs))
+
+        for record in existing_jobs:
+            outstanding_request_ids = [request_id for request_id in record.request_ids if request_id in pending_request_ids]
+            if not outstanding_request_ids:
+                completed_record = record.model_copy(
+                    update={"results_downloaded_at": record.results_downloaded_at or datetime.utcnow()}
+                )
+                append_batch_job_record(batch_jobs_path, completed_record)
+                continue
+
+            logger.info("Batch %s resumed; status=%s", record.remote_batch_id, record.last_known_status)
+            try:
+                current = await _poll_submission(adapter, record, settings, batch_jobs_path)
+            except Exception as exc:  # noqa: BLE001
+                if is_retryable(exc):
+                    raise
+                failed_record = record.model_copy(
+                    update={
+                        "last_known_status": "local_failure",
+                        "status_checked_at": datetime.utcnow(),
+                        "completed_at": datetime.utcnow(),
+                        "terminal_error": str(exc),
+                        "is_terminal": True,
+                        "is_successful": False,
+                    }
+                )
+                append_batch_job_record(batch_jobs_path, failed_record)
+                logger.warning("Batch %s terminal failure; requests re-queued", record.remote_batch_id)
+                continue
+
+            if not current.is_successful:
+                logger.warning("Batch %s terminal failure; requests re-queued", current.remote_batch_id)
+                continue
+
+            chunk_requests = [all_requests[request_id] for request_id in record.request_ids if request_id in all_requests]
+            responses = await asyncio.to_thread(adapter.fetch_results, current, chunk_requests, settings)
+            for response in responses:
+                _record_response(response)
+            downloaded_record = current.model_copy(update={"results_downloaded_at": datetime.utcnow()})
+            append_batch_job_record(batch_jobs_path, downloaded_record)
+            logger.info("Batch %s results downloaded: %d rows", current.remote_batch_id, len(responses))
+
+        remaining_requests = [all_requests[request_id] for request_id in pending_request_order if request_id in pending_request_ids]
+        if not remaining_requests:
+            logger.info("Batch judge [%s]: all pending requests recovered from existing batches.", target.judge_name)
+            continue
+
+        chunks = adapter.split_requests(remaining_requests, settings)
+        submit_interval_s = 0.0
+        batch_budget = settings.batch_budget
+        if batch_budget is not None and batch_budget.batch_requests_per_minute:
+            submit_interval_s = 60.0 / batch_budget.batch_requests_per_minute
+        last_submit_at = 0.0
+
+        for chunk in chunks:
+            if budget_tracker is not None:
+                budget_tracker.can_submit_batch_chunk(chunk)  # type: ignore[attr-defined]
+            if submit_interval_s > 0 and last_submit_at > 0:
+                elapsed = time.monotonic() - last_submit_at
+                if elapsed < submit_interval_s:
+                    await asyncio.sleep(submit_interval_s - elapsed)
+            chunk_id = make_chunk_id(
+                stage="judging",
+                provider=target.provider_kind,
+                request_ids=[request.request_id for request in chunk],
+                judge_name=target.judge_name,
+            )
+            submission = await asyncio.to_thread(
+                adapter.submit_chunk,
+                chunk,
+                run_dir,
+                settings,
+                stage="judging",
+                run_id=config.run.run_id,
+                chunk_id=chunk_id,
+                judge_name=target.judge_name,
+            )
+            append_batch_job_record(batch_jobs_path, submission)
+            last_submit_at = time.monotonic()
+
+            try:
+                current = await _poll_submission(adapter, submission, settings, batch_jobs_path)
+            except Exception as exc:  # noqa: BLE001
+                if is_retryable(exc):
+                    raise
+                failed_record = submission.model_copy(
+                    update={
+                        "last_known_status": "local_failure",
+                        "status_checked_at": datetime.utcnow(),
+                        "completed_at": datetime.utcnow(),
+                        "terminal_error": str(exc),
+                        "is_terminal": True,
+                        "is_successful": False,
+                    }
+                )
+                append_batch_job_record(batch_jobs_path, failed_record)
+                logger.warning("Batch %s terminal failure; requests re-queued", submission.remote_batch_id)
+                continue
+
+            if not current.is_successful:
+                logger.warning("Batch %s terminal failure; requests re-queued", current.remote_batch_id)
+                continue
+
+            responses = await asyncio.to_thread(adapter.fetch_results, current, chunk, settings)
+            for response in responses:
+                _record_response(response)
+            downloaded_record = current.model_copy(update={"results_downloaded_at": datetime.utcnow()})
+            append_batch_job_record(batch_jobs_path, downloaded_record)
+            logger.info("Batch %s results downloaded: %d rows", current.remote_batch_id, len(responses))
 
     return all_outputs
+
+
+async def _poll_submission(
+    adapter: ResumableBatchTransport,
+    submission: BatchJobRecord,
+    settings: ExecutionSettings,
+    batch_jobs_path,
+) -> BatchJobRecord:  # noqa: ANN001
+    current = submission
+    last_seen_status = current.last_known_status
+    poll_start = time.monotonic()
+
+    while not current.is_terminal:
+        if time.monotonic() - poll_start > settings.max_poll_time_s:
+            raise TimeoutError(
+                f"Batch {current.remote_batch_id} polling exceeded {settings.max_poll_time_s}s timeout "
+                f"(last status: {current.last_known_status})"
+            )
+        await asyncio.sleep(adapter.poll_interval_s)
+        updated = await asyncio.to_thread(adapter.refresh_submission, current, settings)
+        if (
+            updated.last_known_status != current.last_known_status
+            or updated.is_terminal != current.is_terminal
+            or updated.terminal_error != current.terminal_error
+        ):
+            append_batch_job_record(batch_jobs_path, updated)
+        current = updated
+        if current.last_known_status != last_seen_status:
+            logger.info("Batch %s resumed; status=%s", current.remote_batch_id, current.last_known_status)
+            last_seen_status = current.last_known_status
+    return current
 
 
 async def run_judge(

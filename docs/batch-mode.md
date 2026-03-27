@@ -106,6 +106,8 @@ judging:
 
 The executor itself contains no provider branching.
 
+For `run-judge`, batch providers also persist remote chunk submissions to `runs/<run_id>/batch_jobs.jsonl`. On the next run, the runner first tries to recover those remote batches and download their results before submitting any new chunks.
+
 ## Polling and Limits
 
 Batch polling is controlled by:
