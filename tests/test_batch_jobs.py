@@ -52,6 +52,26 @@ def test_latest_batch_job_records_returns_latest_snapshot_per_chunk(tmp_path: Pa
     assert latest["chunk-a"].last_known_status == "completed"
 
 
+def test_latest_batch_job_records_prefers_newest_timestamp_not_last_line(tmp_path: Path):
+    path = tmp_path / "batch_jobs.jsonl"
+    older = _record(chunk_id="chunk-a", status="in_progress")
+    newer = older.model_copy(update={"last_known_status": "completed", "completed_at": datetime(2024, 1, 1, 0, 5, 0)})
+
+    append_batch_job_record(path, newer)
+    append_batch_job_record(path, older)
+
+    records = latest_batch_job_records(
+        path,
+        run_id="run-1",
+        stage="judging",
+        provider="anthropic",
+        judge_name="judge-a",
+    )
+
+    assert len(records) == 1
+    assert records[0].last_known_status == "completed"
+
+
 def test_reserved_request_ids_only_tracks_live_jobs(tmp_path: Path):
     path = tmp_path / "batch_jobs.jsonl"
     append_batch_job_record(path, _record(chunk_id="chunk-a", status="in_progress"))

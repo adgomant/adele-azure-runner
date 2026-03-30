@@ -164,6 +164,7 @@ async def _run_batch_judges(
     inference_outputs: list[InferenceOutput],
     ground_truths: dict[str, str],
     done: set[tuple],
+    force_run: bool,
     run_dir,
     judge_path,
 ) -> list[JudgeOutput]:  # noqa: ANN001
@@ -270,9 +271,9 @@ async def _run_batch_judges(
                     provider=target.provider_kind,
                     judge_name=target.judge_name,
                 )
-                if record.needs_recovery
+                if record.needs_recovery or (force_run and record.is_successful)
             ],
-            key=lambda record: record.submitted_at or datetime.min,
+            key=lambda record: record.latest_event_at,
         )
         logger.info("Recovered %d pending batch jobs from disk", len(existing_jobs))
 
@@ -459,6 +460,7 @@ async def run_judge(
         inference_outputs,
         ground_truths,
         done,
+        force_run,
         run_dir,
         judge_path,
     )

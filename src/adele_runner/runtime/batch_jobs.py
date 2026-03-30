@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -49,6 +49,25 @@ class BatchJobRecord(BaseModel):
     def reserves_requests(self) -> bool:
         return self.results_downloaded_at is None and not self.is_terminal
 
+    @property
+    def latest_event_at(self) -> datetime:
+        """Best-effort timestamp for ordering snapshots of the same chunk."""
+        return _as_utc_aware(
+            self.results_downloaded_at
+            or self.completed_at
+            or self.status_checked_at
+            or self.submitted_at
+        )
+
+
+def _as_utc_aware(value: datetime | None) -> datetime:
+    """Normalize datetimes so ordering works across naive and aware snapshots."""
+    if value is None:
+        return datetime.min.replace(tzinfo=UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
 
 def append_batch_job_record(path: Path, record: BatchJobRecord) -> None:
     """Append one batch-job snapshot to disk."""
@@ -77,7 +96,9 @@ def latest_batch_job_records(
             continue
         if judge_name is not None and record.judge_name != judge_name:
             continue
-        latest[record.chunk_id] = record
+        current = latest.get(record.chunk_id)
+        if current is None or record.latest_event_at >= current.latest_event_at:
+            latest[record.chunk_id] = record
     return list(latest.values())
 
 

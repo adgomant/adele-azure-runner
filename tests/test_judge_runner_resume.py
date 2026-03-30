@@ -148,3 +148,98 @@ async def test_run_judge_recovers_persisted_batch_without_resubmitting(tmp_path:
         judge_name="judge-a",
     )
     assert latest_jobs[0].results_downloaded_at is not None
+
+
+@pytest.mark.asyncio
+async def test_run_judge_force_run_recovers_downloaded_batch_without_resubmitting(tmp_path: Path):
+    adapter = _FakeResumableBatchAdapter()
+    cfg = AppConfig.model_validate(
+        {
+            "run": {"run_id": "resume-run", "output_dir": str(tmp_path)},
+            "judging": {
+                "enabled": True,
+                "prompt_template": "v2",
+                "judges": [
+                    {
+                        "name": "judge-a",
+                        "provider": "anthropic",
+                        "mode": "batch",
+                        "model": "claude-sonnet-4-5",
+                    }
+                ],
+            },
+        }
+    )
+    inference_output = InferenceOutput(
+        instance_id="i1",
+        model_id="model-a",
+        prompt="Question?",
+        response="Answer",
+        run_id="resume-run",
+    )
+    batch_request_id = "judge-a::i1::model-a"
+    append_batch_job_record(
+        cfg.batch_jobs_path(),
+        BatchJobRecord(
+            run_id="resume-run",
+            stage="judging",
+            provider="anthropic",
+            judge_name="judge-a",
+            chunk_id="judging-anthropic-judge-a-abc123",
+            remote_batch_id="msgbatch_123",
+            request_ids=[batch_request_id],
+            request_count=1,
+            last_known_status="ended",
+            completed_at=inference_output.timestamp,
+            results_downloaded_at=inference_output.timestamp,
+            is_terminal=True,
+            is_successful=True,
+        ),
+    )
+
+    with patch.object(
+        judge_runner,
+        "resolve_judge_plans",
+        return_value=[
+            ResolvedJudgePlan(
+                target=ResolvedJudgeTarget(
+                    judge_name="judge-a",
+                    provider_target=ResolvedProviderTarget(
+                        provider_kind="anthropic",
+                        model="claude-sonnet-4-5",
+                    ),
+                    requested_mode="batch",
+                    prompt_mode="batch",
+                    prompt_template="v2",
+                    max_tokens=16,
+                ),
+                binding=ResolvedModeBinding(
+                    provider_target=ResolvedProviderTarget(
+                        provider_kind="anthropic",
+                        model="claude-sonnet-4-5",
+                    ),
+                    execution_kind="batch",
+                    create_adapter=lambda *args, **kwargs: adapter,  # noqa: ARG005
+                ),
+                settings=ExecutionSettings(
+                    max_in_flight=1,
+                    request_timeout_s=30.0,
+                    max_retries=1,
+                    backoff_base_s=0.0,
+                    backoff_max_s=0.0,
+                    max_poll_time_s=60.0,
+                    batch_completion_window="24h",
+                ),
+            )
+        ],
+    ):
+        outputs = await judge_runner.run_judge(
+            cfg,
+            [inference_output],
+            {"i1": "Ground truth"},
+            force_run=True,
+        )
+
+    assert adapter.submit_calls == 0
+    assert len(outputs) == 1
+    assert outputs[0].score == 5
