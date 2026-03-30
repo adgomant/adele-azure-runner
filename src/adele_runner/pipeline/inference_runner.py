@@ -48,7 +48,12 @@ def _build_inference_budget_tracker(config: AppConfig) -> BudgetTracker | None:
     )
 
 
-async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[InferenceOutput]:
+async def run_inference(
+    config: AppConfig,
+    items: list[DatasetItem],
+    *,
+    force_run: bool = False,
+) -> list[InferenceOutput]:
     """Run inference over *items* with checkpointing and dedup."""
     plan = resolve_inference_plan(config)
     target = plan.target
@@ -71,7 +76,7 @@ async def run_inference(config: AppConfig, items: list[DatasetItem]) -> list[Inf
     )
 
     latest_outputs = latest_jsonl_by_key(outputs_path, InferenceOutput, "instance_id", "model_id")
-    done = {key for key, output in latest_outputs.items() if output.status == "success"}
+    done = set() if force_run else {key for key, output in latest_outputs.items() if output.status == "success"}
     logger.info("Dedup index loaded: %d already completed.", len(done))
 
     pending = [item for item in items if (item.instance_id, target.model) not in done]

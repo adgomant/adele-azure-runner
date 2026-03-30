@@ -400,6 +400,7 @@ def run_inference(
     ),
     tpm: int | None = typer.Option(None, "--tpm", help="Tokens per minute rate limit."),
     rpm: int | None = typer.Option(None, "--rpm", help="Requests per minute rate limit."),
+    force_run: bool = typer.Option(False, "--force-run", help="Run all items even if outputs already exist."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print plan and exit without API calls."),
 ) -> None:
     """Run inference over the ADeLe dataset."""
@@ -434,7 +435,7 @@ def run_inference(
 
     _validate_or_exit(cfg)
     try:
-        asyncio.run(_run(cfg, items))
+        asyncio.run(_run(cfg, items, force_run=force_run))
     except BudgetExceededError as exc:
         _exit_for_budget(exc)
     console.print("[bold green]Inference complete.[/bold green]")
@@ -451,6 +452,11 @@ def run_judge(
     ),
     judge_template: str | None = typer.Option(
         None, "--judge-template", help="Judge prompt template: v1 or v2."
+    ),
+    force_run: bool = typer.Option(
+        False,
+        "--force-run",
+        help="Run all judge evaluations again even if successful judge outputs already exist.",
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print plan and exit without API calls."),
 ) -> None:
@@ -492,7 +498,7 @@ def run_judge(
     ground_truths = _load_ground_truths(cfg)
 
     try:
-        asyncio.run(_run(cfg, inference_outputs, ground_truths))
+        asyncio.run(_run(cfg, inference_outputs, ground_truths, force_run=force_run))
     except BudgetExceededError as exc:
         _exit_for_budget(exc)
     console.print("[bold green]Judging complete.[/bold green]")
@@ -549,6 +555,11 @@ def run_all(
     judge_template: str | None = typer.Option(
         None, "--judge-template", help="Judge prompt template: v1 or v2."
     ),
+    force_run: bool = typer.Option(
+        False,
+        "--force-run",
+        help="Force both inference and judging to bypass successful-output dedup checks.",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print plan and exit without API calls."),
 ) -> None:
     """Run the full pipeline: inference → judge → merge → summarize."""
@@ -591,7 +602,7 @@ def run_all(
 
     # 1. Inference
     try:
-        asyncio.run(_run_inference(cfg, items))
+        asyncio.run(_run_inference(cfg, items, force_run=force_run))
     except BudgetExceededError as exc:
         _exit_for_budget(exc)
     console.print("[bold green]Inference complete.[/bold green]")
@@ -600,11 +611,11 @@ def run_all(
     if cfg.judging.enabled:
         inference_outputs = read_jsonl(cfg.outputs_path(), InferenceOutput)
         ground_truths = _load_ground_truths(cfg)
-    try:
-        asyncio.run(_run_judge(cfg, inference_outputs, ground_truths))
-    except BudgetExceededError as exc:
-        _exit_for_budget(exc)
-    console.print("[bold green]Judging complete.[/bold green]")
+        try:
+            asyncio.run(_run_judge(cfg, inference_outputs, ground_truths, force_run=force_run))
+        except BudgetExceededError as exc:
+            _exit_for_budget(exc)
+        console.print("[bold green]Judging complete.[/bold green]")
 
     # 3. Merge
     path = _merge(cfg)

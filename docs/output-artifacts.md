@@ -17,14 +17,16 @@ runs/<run_id>/
 
 ## `outputs.jsonl`
 
-One JSON object per line. Each line is an `InferenceOutput` record.
+One JSON object per line. Each line is an `InferenceOutput` record. Successful and failed attempts are both persisted.
 
 | Field | Type | Description |
 |---|---|---|
 | `instance_id` | `str` | Dataset instance identifier |
 | `model_id` | `str` | Model name or deployment used |
 | `prompt` | `str` | The prompt sent to the model |
-| `response` | `str` | Model's response text |
+| `response` | `str \| null` | Model response text, or `null` when inference failed |
+| `status` | `str` | `"success"` or `"failed"` |
+| `error_message` | `str \| null` | Failure reason when the model did not produce a usable response |
 | `tokens_prompt` | `int \| null` | Prompt token count (if reported by API) |
 | `tokens_completion` | `int \| null` | Completion token count |
 | `latency_s` | `float \| null` | Request latency in seconds |
@@ -40,18 +42,20 @@ One JSON object per line. Each line is an `InferenceOutput` record.
 
 ## `judge_outputs.jsonl`
 
-One JSON object per line. Each line is a `JudgeOutput` record.
+One JSON object per line. Each line is a `JudgeOutput` record. Successful, parse-failed, request-failed, and skipped evaluations are all persisted.
 
 | Field | Type | Description |
 |---|---|---|
 | `instance_id` | `str` | Dataset instance identifier |
 | `model_id` | `str` | Model that produced the inference output |
 | `judge_name` | `str` | Display name of the judge |
-| `score` | `int` | Quality score (1--5) |
-| `verdict` | `str` | `"correct"`, `"incorrect"`, `"partial"`, or `"unknown"` |
-| `reason` | `str` | Free-text explanation |
-| `raw_output` | `str` | Raw judge response (for auditability) |
+| `score` | `int \| null` | Quality score (1--5), or `null` when the judge produced no usable score |
+| `verdict` | `str \| null` | `"correct"`, `"incorrect"`, `"partial"`, `"unknown"`, or `null` |
+| `reason` | `str \| null` | Free-text explanation when available |
+| `raw_output` | `str \| null` | Raw judge response (for auditability) |
 | `judge_prompt` | `str` | Full prompt sent to the judge |
+| `status` | `str` | `"success"`, `"parse_failed"`, `"request_failed"`, or `"skipped"` |
+| `error_message` | `str \| null` | Failure or skip reason |
 | `timestamp` | `datetime` | When the evaluation was recorded (UTC) |
 | `run_id` | `str` | Run identifier |
 
@@ -95,8 +99,8 @@ A single Parquet file joining inference outputs with judge evaluations. Generate
 | `judge_<name>_score` | JudgeOutput (one column per judge) |
 | `judge_<name>_verdict` | JudgeOutput (one column per judge) |
 | `judge_<name>_reason` | JudgeOutput (one column per judge) |
-| `avg_judge_score` | Computed: mean of all judge scores for this instance |
-| `verification_score` | Computed: `1` if `avg_judge_score >= 3`, else `0` |
+| `avg_judge_score` | Computed: mean of all expected judge scores for this instance, or `null` if any expected judge is missing/incomplete |
+| `verification_score` | Computed: `1` if `avg_judge_score >= 3`, `0` if `< 3`, else `null` when verification is incomplete |
 
 **Reading in Python:**
 

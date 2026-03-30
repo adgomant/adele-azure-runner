@@ -423,6 +423,8 @@ async def run_judge(
     config: AppConfig,
     inference_outputs: list[InferenceOutput],
     ground_truths: dict[str, str],
+    *,
+    force_run: bool = False,
 ) -> list[JudgeOutput]:
     """Run all configured judges over *inference_outputs*."""
     if not config.judging.enabled:
@@ -434,7 +436,7 @@ async def run_judge(
     judge_path = config.judge_outputs_path()
 
     latest_judges = latest_jsonl_by_key(judge_path, JudgeOutput, "instance_id", "model_id", "judge_name")
-    done = {key for key, output in latest_judges.items() if output.status == "success"}
+    done = set() if force_run else {key for key, output in latest_judges.items() if output.status == "success"}
     logger.info("Judge dedup index: %d entries.", len(done))
 
     plans = resolve_judge_plans(config)

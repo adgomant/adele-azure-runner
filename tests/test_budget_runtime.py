@@ -161,6 +161,7 @@ pricing:
             mode=None,
             tpm=None,
             rpm=None,
+            force_run=False,
             dry_run=False,
         )
     assert exc.value.exit_code == 3

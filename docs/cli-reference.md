@@ -118,3 +118,6 @@ uv run adele-runner run-all \
 ## Breaking Change
 
 Legacy CLI aliases and shorthand judge formats have been removed. Use explicit provider and mode values everywhere.
+`--force-run` bypasses the successful-output dedup check and reruns every item for the selected inference lane.
+
+`--force-run` bypasses the successful-output dedup check for judge outputs. For batch judges, the runner still checks `batch_jobs.jsonl` and recovers already-submitted remote work before submitting new batches.
